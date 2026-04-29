@@ -122,22 +122,45 @@ async function getBaseConhecimento() {
         }
 }
 
-async function buscarRAG(mensagem) {
-        const palavras = mensagem.toLowerCase()
-                .replace(/[^a-zA-ZÀ-ú\s]/g, '')
-                .split(/\s+/)
-                .filter(p => p.length > 3); // ignora palavras curtas
-
-        if (!palavras.length) return [];
-
-        const data = await getBaseConhecimento();
-        if (!data) return [];
-
-        // Filtra por palavras-chave
-        return data.filter(item =>
-                item.palavras_chave && palavras.some(p => item.palavras_chave.toLowerCase().includes(p))
-        );
+function stemPortugues(palavra) {
+	return palavra
+		.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+		.toLowerCase()
+		.replace(/ores$|ões$|oes$|ção$|cao$|es$|os$|as$|is$|ns$|s$/, '')
+		.replace(/mente$|ando$|endo$|ção$/, '')
+		.trim();
 }
+
+async function buscarRAG(mensagem) {
+	const palavras = mensagem
+		.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+		.toLowerCase()
+		.replace(/[^a-z\s]/g, '')
+		.split(/\s+/)
+		.filter(p => p.length > 2)
+		.map(p => stemPortugues(p));
+
+	if (!palavras.length) return [];
+
+	const data = await getBaseConhecimento();
+	if (!data || !data.length) return [];
+
+	const seen = new Set();
+	return data.filter(item => {
+		if (!item.palavras_chave) return false;
+		const kwNorm = item.palavras_chave
+			.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+			.toLowerCase();
+		const match = palavras.some(p => kwNorm.includes(p));
+		if (match && !seen.has(item.categoria)) {
+			seen.add(item.categoria);
+			return true;
+		}
+		return false;
+	});
+}
+
+
 
 
 
