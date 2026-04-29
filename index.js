@@ -36,7 +36,7 @@ let ultimoVendedorTarde = 'Paulo';
 
 // Status do bot para o CRM
 const botStatus = {
-	modelo: 'groq',
+	modelo: 'groq', // 'groq' | 'groq_2' | 'gemini'
 	fallbacksHoje: 0,
 	ultimoWebhook: null
 };
@@ -160,9 +160,12 @@ IDENTIFICAÇÃO AUTOMÁTICA
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Antes de responder, classifique a mensagem:
 
-ALUNO (já estuda na escola) — sinais: "minha aula", "meu professor", "minha mensalidade", "prova", "falta", "material", "turma que estou", "sou aluno":
-→ Responda APENAS: "Entendido! Vou te encaminhar para a coordenação. Um momento! 😊"
-→ NÃO tente resolver a dúvida. NÃO peça dados.
+ALUNO (já estuda na escola) vs LEAD (quer se matricular):
+- Se houver sinal claro de que JÁ É ALUNO (ex: "perdi minha aula", "sou aluno"):
+  → Responda: "Entendido! Vou te encaminhar para a coordenação para que resolvam isso. Um momento! 😊"
+- Se houver dúvida (perguntas sobre professores, aulas, horários):
+  → NÃO assuma que é aluno. Responda à dúvida e pergunte se ele já estuda com a gente.
+- PRIORIDADE LEAD: Na dúvida, trate como LEAD. É melhor explicar algo para um aluno do que expulsar um lead mandando-o para a coordenação.
 
 LEAD (quer se matricular) — sinais: "quero aprender", "tem curso", "vi o instagram", "vi anúncio", "quanto custa", "tem vaga", "como funciona", "meu filho", "minha filha":
 → Siga o fluxo de qualificação abaixo.
@@ -176,7 +179,8 @@ INFERÊNCIA DE CONTEXTO — PENSE ANTES DE PERGUNTAR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - "minha mãe quer que eu faça" / "meu pai mandou perguntar" → a pessoa é menor de idade. Pergunte apenas "Quantos anos você tem?" e infira a turma direto.
 - "vi o instagram" / "vi um anúncio" / "me indicaram" → é lead. Pule a pergunta aluno/lead.
-- "minha mensalidade" / "minha aula" / "meu professor" → é aluno. Encaminhe para coordenação sem perguntar nada.
+- Se o cliente mencionar "minha mensalidade", "minha aula" ou "meu professor", confirme: "Você já é nosso aluno? Se sim, vou te passar para a coordenação!"
+- NUNCA encaminhe para a coordenação sem ter certeza de que o cliente já é aluno. Na dúvida, continue como LEAD.
 - Se o cliente já informou a idade, calcule a turma sozinho. NÃO peça a faixa etária de novo.
 - Se o cliente já está no WhatsApp, NÃO peça telefone. NÃO peça e-mail a menos que seja essencial.
 
@@ -269,7 +273,7 @@ REGRAS INVIOLÁVEIS
 - Para qualquer pergunta sobre a escola (professores, metodologia, infraestrutura, cursos), use SOMENTE as informações do bloco "INFORMAÇÕES VERIFICADAS" acima. Se a informação não estiver lá, responda: "Essa informação o comercial te passa com detalhes!"`;
 
 geminiModel = genAI.getGenerativeModel({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.1-flash-lite-preview',
         systemInstruction: SYSTEM_PROMPT
 });
 
@@ -280,7 +284,7 @@ async function askGemini(telefone, mensagem, systemPromptFinal = SYSTEM_PROMPT) 
         })).slice(0, -1); // Remove a última mensagem que será enviada no sendMessage
 
         const model = genAI.getGenerativeModel({
-                model: 'gemini-2.5-flash',
+                model: 'gemini-3.1-flash-lite-preview',
                 systemInstruction: systemPromptFinal
         });
 
@@ -297,68 +301,84 @@ async function askGemini(telefone, mensagem, systemPromptFinal = SYSTEM_PROMPT) 
         }
 }
 
-async function askDeepSeek(telefone, mensagem) {
-        if (!conversas[telefone]) conversas[telefone] = [];
-        conversas[telefone].push({ role: 'user', content: mensagem });
-        if (conversas[telefone].length > 20) conversas[telefone] = conversas[telefone].slice(-20);
+async function askGroq(telefone, mensagem, apiKey, systemPromptFinal) {
+  const response = await axios.post(
+    'https://api.groq.com/openai/v1/chat/completions',
+    {
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: systemPromptFinal },
+        ...conversas[telefone]
+      ]
+    },
+    {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000 // 10 segundos para cada tentativa Groq
+    }
+  );
+  return response.data.choices[0].message.content;
+}
 
-        const ragResultados = await buscarRAG(mensagem);
-        let systemPromptFinal = SYSTEM_PROMPT;
-        
-        if (ragResultados.length > 0) {
-                const contextoRAG = ragResultados.map(r => `- ${r.resposta}`).join('\n');
-                systemPromptFinal = `${SYSTEM_PROMPT}
+async function askAI(telefone, mensagem) {
+  if (!conversas[telefone]) conversas[telefone] = [];
+  conversas[telefone].push({ role: 'user', content: mensagem });
+  if (conversas[telefone].length > 20) conversas[telefone] = conversas[telefone].slice(-20);
+
+  // Busca RAG e monta prompt final
+  const ragResultados = await buscarRAG(mensagem);
+  let systemPromptFinal = SYSTEM_PROMPT;
+  if (ragResultados.length > 0) {
+    const contextoRAG = ragResultados.map(r => `- ${r.resposta}`).join('\n');
+    systemPromptFinal = `${SYSTEM_PROMPT}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 INFORMAÇÕES VERIFICADAS DA ESCOLA — USE APENAS ESTAS, NÃO INVENTE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${contextoRAG}`;
-                console.log(`🧠 Contexto RAG injetado (${ragResultados.length} itens)`);
-        }
+    console.log(`🧠 Contexto RAG injetado (${ragResultados.length} itens)`);
+  }
 
-        try {
-                const response = await axios.post(
-                        'https://api.groq.com/openai/v1/chat/completions',
-                        {
-                                model: 'llama-3.3-70b-versatile',
-                                messages: [
-                                        { role: 'system', content: systemPromptFinal },
-                                        ...conversas[telefone]
-                                ]
-                        },
-                        {
-                                headers: {
-                                        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-                                        'Content-Type': 'application/json'
-                                },
-                                timeout: 5000 // 5 segundos de timeout para o Groq
-                        }
-                );
+  // Tentativa 1 — Groq chave principal
+  if (process.env.GROQ_API_KEY) {
+    try {
+      const reply = await askGroq(telefone, mensagem, process.env.GROQ_API_KEY, systemPromptFinal);
+      conversas[telefone].push({ role: 'assistant', content: reply });
+      botStatus.modelo = 'groq';
+      return reply;
+    } catch (err) {
+      const isLimit = err.response?.status === 429 || err.code === 'ECONNABORTED';
+      console.warn(`⚠️ Groq chave 1 falhou (limit: ${isLimit}):`, err.message);
+    }
+  }
 
-                const reply = response.data.choices[0].message.content;
-                conversas[telefone].push({ role: 'assistant', content: reply });
-                
-                // Se o Groq funcionou, garante que o status mostre o modelo principal
-                botStatus.modelo = 'groq';
-                
-                return reply;
-        } catch (err) {
-                const isRateLimit = err.response?.status === 429 || err.message.includes('rate_limit_exceeded');
-                console.error(`⚠️ Erro no Groq (Rate Limit: ${isRateLimit}):`, err.response?.data || err.message);
+  // Tentativa 2 — Groq chave reserva
+  if (process.env.GROQ_API_KEY_2) {
+    try {
+      const reply = await askGroq(telefone, mensagem, process.env.GROQ_API_KEY_2, systemPromptFinal);
+      conversas[telefone].push({ role: 'assistant', content: reply });
+      botStatus.modelo = 'groq_2';
+      console.log('✅ Usando Groq chave 2');
+      return reply;
+    } catch (err) {
+      const isLimit = err.response?.status === 429 || err.code === 'ECONNABORTED';
+      console.warn(`⚠️ Groq chave 2 falhou (limit: ${isLimit}):`, err.message);
+    }
+  }
 
-                if (isRateLimit || err.code === 'ECONNABORTED') {
-                        console.log('🔄 Acionando fallback: Gemini 2.5 Flash...');
-                        botStatus.modelo = 'gemini';
-                        botStatus.fallbacksHoje++;
-                        try {
-                                return await askGemini(telefone, mensagem, systemPromptFinal);
-                        } catch (geminiErr) {
-                                console.error('❌ Erro crítico: Groq e Gemini falharam.', geminiErr.message);
-                                throw geminiErr;
-                        }
-                }
-                throw err;
-        }
+  // Tentativa 3 — Gemini (Fallback final)
+  console.log('🔄 Acionando Gemini como fallback final...');
+  botStatus.modelo = 'gemini';
+  botStatus.fallbacksHoje++;
+  try {
+    const reply = await askGemini(telefone, mensagem, systemPromptFinal);
+    return reply;
+  } catch (geminiErr) {
+    console.error('❌ Todos os modelos falharam.', geminiErr.message);
+    throw geminiErr;
+  }
 }
 
 async function sendWhatsApp(telefone, mensagem) {
@@ -489,7 +509,7 @@ app.post('/webhook', async (req, res) => {
                 ultimaAtividade[telefone] = Date.now();
                 reengajamentoEnviado[telefone] = false;
 
-                const reply = await askDeepSeek(telefone, mensagem);
+                const reply = await askAI(telefone, mensagem);
                 let tipo = detectarTipo(mensagem, reply);
 
                 // Extração de dados da resposta do bot para memória
@@ -538,7 +558,7 @@ app.post('/simulate', async (req, res) => {
 	conversas[telefone] = [];
 
 	try {
-		const reply = await askDeepSeek(telefone, mensagem);
+		const reply = await askAI(telefone, mensagem);
 		const tipo = detectarTipo(mensagem, reply);
 		delete conversas[telefone]; // limpa memória depois
 		res.json({ reply, tipo, modelo: botStatus.modelo });
@@ -555,7 +575,8 @@ app.get('/status', (req, res) => {
 		fallbacksHoje: botStatus.fallbacksHoje,
 		ultimoWebhook: botStatus.ultimoWebhook || null,
 		uptime: Math.floor(process.uptime()),
-		conversasAtivas: Object.keys(conversas).length
+		conversasAtivas: Object.keys(conversas).length,
+		groq2Disponivel: !!process.env.GROQ_API_KEY_2
 	});
 });
 
