@@ -104,6 +104,43 @@ async function getVendedor() {
 }
 
 
+// Cache da base de conhecimento (RAG)
+let ragCache = null;
+let ragCacheTime = 0;
+
+async function getBaseConhecimento() {
+	if (ragCache && Date.now() - ragCacheTime < 10 * 60 * 1000) return ragCache;
+	try {
+		const { data, error } = await supabase.from('base_conhecimento').select('*').eq('ativo', true);
+		if (error) throw error;
+		ragCache = data || [];
+		ragCacheTime = Date.now();
+		return ragCache;
+	} catch (e) {
+		console.error('❌ Erro ao buscar base de conhecimento:', e.message);
+		return ragCache || [];
+	}
+}
+
+async function buscarRAG(mensagem) {
+	const palavras = mensagem.toLowerCase()
+		.replace(/[^a-zA-ZÀ-ú\s]/g, '')
+		.split(/\s+/)
+		.filter(p => p.length > 3); // ignora palavras curtas
+
+	if (!palavras.length) return [];
+
+	const data = await getBaseConhecimento();
+	if (!data) return [];
+
+	// Filtra por palavras-chave
+	return data.filter(item =>
+		item.palavras_chave && palavras.some(p => item.palavras_chave.toLowerCase().includes(p))
+	);
+}
+
+
+
 const SYSTEM_PROMPT = `Você é a assistente virtual de uma escola de idiomas localizada no Recreio dos Bandeirantes, Rio de Janeiro.
 Fale sempre em português.
 
@@ -177,7 +214,7 @@ TURMAS — RESPONDA COM CONFIANÇA, SEM "PROVAVELMENTE"
 - 7 a 8 anos → FUN
 - 9 a 10 anos → KIDS
 - 11 a 12 anos → TEEN UP
-- 13 anos ou mais (adolescente/adulto) → FLY
+- 13 anos ou mais (jovens, adolescentes e adultos) → FLY. ATENÇÃO: NUNCA coloque alunos de 13 anos ou mais na turma TEEN UP.
 - Nível intermediário → QUEST
 - Pré-avançado → PRE ADV
 - Avançado → ADV
@@ -187,31 +224,9 @@ MASTER: sempre avise que é obrigatório fazer um nivelamento antes de qualquer 
 Cada período tem seu próprio material didático incluso.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-HORÁRIOS DISPONÍVEIS
+HORÁRIOS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Segunda e Quarta:
-- 14:00–15:15 → PRE ADV Adulto, PRE ADV Teens
-- 15:15–16:30 → FLY 2
-- 16:30–17:45 → PRE ADV 2, QUEST 1, FLY 2
-- 18:00–19:15 → FUN 2, TEEN UP 1, ADV 1, MASTER 2
-- 19:15–20:30 → FLY 1, MASTER 1, ACC 1
-
-Terça e Quinta:
-- 10:00–11:15 → QUEST 1, KIDS 1
-- 14:00–15:15 → PRE ADV 1
-- 15:15–16:30 → ADV 1, ADV 2, FLY 1
-- 16:30–17:45 → TEEN UP 1, KIDS 4, TEEN UP 3
-- 18:00–19:15 → KIDS 1, PRE ADV 2, MASTER 1, TEEN UP 3, ADV 2
-- 19:15–20:30 → INTER 2, FLY 2, ADV 1, PRE ADV 1, TEEN UP 3
-
-Sábado:
-- 08:00–10:45 → MASTER 1
-- 10:45–13:30 → FLY 2, PRE ADV 1
-- 14:00–15:15 → PRE ADV 1
-- 15:15–16:30 → FLY 1
-- 16:30–17:45 → PRE ADV 1
-
-Aulas online: grade flexível — informe que o comercial passa os horários disponíveis.
+Os horários disponíveis são fornecidos pelo bloco "INFORMAÇÕES VERIFICADAS" abaixo (via RAG). Nunca invente horários que não estejam nesse bloco. Se não houver informação de horário disponível, diga: "O comercial confirma os horários disponíveis para você!"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CURSOS DISPONÍVEIS
@@ -245,28 +260,41 @@ ENCAMINHAMENTO — COORDENAÇÃO OU COMERCIAL
 REGRAS INVIOLÁVEIS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - NUNCA informe preços — isso é função do comercial.
-- NUNCA invente informações que não estejam neste prompt.
+- NUNCA invente informações que não estejam neste prompt. Se não souber, diga "o comercial te passa essa informação".
+- NUNCA invente dados sobre professores (nacionalidade, quantidade, nomes) — essas informações não estão disponíveis.
 - NUNCA responda dúvidas de alunos — encaminhe sempre.
-- NUNCA confirme localização baseada no que o cliente disse.`;
+- NUNCA confirme localização baseada no que o cliente disse.
+- NUNCA repita a mensagem de encaminhamento ao comercial mais de uma vez na mesma conversa.
+- Se o cliente fizer perguntas fora do escopo (professores, metodologia, detalhes pedagógicos), responda: "Essa informação o comercial te passa com detalhes. Quer que eu registre seu interesse?"
+- Para qualquer pergunta sobre a escola (professores, metodologia, infraestrutura, cursos), use SOMENTE as informações do bloco "INFORMAÇÕES VERIFICADAS" acima. Se a informação não estiver lá, responda: "Essa informação o comercial te passa com detalhes!"`;
 
 geminiModel = genAI.getGenerativeModel({
-        model: 'gemini-3.1-flash-lite-preview',
+        model: 'gemini-2.5-flash',
         systemInstruction: SYSTEM_PROMPT
 });
 
-async function askGemini(telefone, mensagem) {
+async function askGemini(telefone, mensagem, systemPromptFinal = SYSTEM_PROMPT) {
         const history = conversas[telefone].map(m => ({
                 role: m.role === 'assistant' ? 'model' : 'user',
                 parts: [{ text: m.content }]
         })).slice(0, -1); // Remove a última mensagem que será enviada no sendMessage
 
-        const chat = geminiModel.startChat({ history });
+        const model = genAI.getGenerativeModel({
+                model: 'gemini-2.5-flash',
+                systemInstruction: systemPromptFinal
+        });
 
-        const result = await chat.sendMessage(mensagem);
-        const reply = result.response.text();
+        try {
+                const chat = model.startChat({ history });
+                const result = await chat.sendMessage(mensagem);
+                const reply = result.response.text();
 
-        conversas[telefone].push({ role: 'assistant', content: reply });
-        return reply;
+                conversas[telefone].push({ role: 'assistant', content: reply });
+                return reply;
+        } catch (error) {
+                console.error('❌ Erro na API do Gemini:', error.message);
+                throw error;
+        }
 }
 
 async function askDeepSeek(telefone, mensagem) {
@@ -274,13 +302,27 @@ async function askDeepSeek(telefone, mensagem) {
         conversas[telefone].push({ role: 'user', content: mensagem });
         if (conversas[telefone].length > 20) conversas[telefone] = conversas[telefone].slice(-20);
 
+        const ragResultados = await buscarRAG(mensagem);
+        let systemPromptFinal = SYSTEM_PROMPT;
+        
+        if (ragResultados.length > 0) {
+                const contextoRAG = ragResultados.map(r => `- ${r.resposta}`).join('\n');
+                systemPromptFinal = `${SYSTEM_PROMPT}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INFORMAÇÕES VERIFICADAS DA ESCOLA — USE APENAS ESTAS, NÃO INVENTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${contextoRAG}`;
+                console.log(`🧠 Contexto RAG injetado (${ragResultados.length} itens)`);
+        }
+
         try {
                 const response = await axios.post(
                         'https://api.groq.com/openai/v1/chat/completions',
                         {
                                 model: 'llama-3.3-70b-versatile',
                                 messages: [
-                                        { role: 'system', content: SYSTEM_PROMPT },
+                                        { role: 'system', content: systemPromptFinal },
                                         ...conversas[telefone]
                                 ]
                         },
@@ -305,11 +347,11 @@ async function askDeepSeek(telefone, mensagem) {
                 console.error(`⚠️ Erro no Groq (Rate Limit: ${isRateLimit}):`, err.response?.data || err.message);
 
                 if (isRateLimit || err.code === 'ECONNABORTED') {
-                        console.log('🔄 Acionando fallback: Gemini 3.1 Flash-Lite...');
+                        console.log('🔄 Acionando fallback: Gemini 2.5 Flash...');
                         botStatus.modelo = 'gemini';
                         botStatus.fallbacksHoje++;
                         try {
-                                return await askGemini(telefone, mensagem);
+                                return await askGemini(telefone, mensagem, systemPromptFinal);
                         } catch (geminiErr) {
                                 console.error('❌ Erro crítico: Groq e Gemini falharam.', geminiErr.message);
                                 throw geminiErr;
