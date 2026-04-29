@@ -26,6 +26,11 @@ let geminiModel;
 // Memória de conversa por usuário
 const conversas = {};
 
+// Dados dos leads extraídos e gerenciamento de inatividade
+const dadosLead = {};
+const ultimaAtividade = {};
+const reengajamentoEnviado = {};
+
 // Rodízio para o período da tarde
 let ultimoVendedorTarde = 'Paulo';
 
@@ -56,7 +61,7 @@ async function getEscala() {
 
 async function getVendedor() {
 	const escala = await getEscala();
-	const agora = new Date();
+	const agora = new Date(new Date().toLocaleString("en-US", {timeZone: "America/Sao_Paulo"}));
 	const hora = agora.getHours() + agora.getMinutes() / 60;
 	const dia = agora.getDay();
 
@@ -146,8 +151,25 @@ Colete as informações UMA de cada vez, nesta ordem:
 2. Idade (para indicar a turma certa)
 3. Horário preferido (manhã / tarde / noite / sábado)
 
-Somente após ter nome + idade + horário, finalize com:
-"Perfeito, [Nome]! Vou passar seus dados para o nosso setor comercial e em breve eles entram em contato com os valores e próximos passos. 😊"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONFIRMAÇÃO FINAL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Somente após ter nome + idade + horário, ANTES de encerrar, você DEVE enviar uma mensagem de confirmação com os dados coletados EXATAMENTE neste formato:
+
+Perfeito! Antes de encaminhar, deixa eu confirmar seus dados:
+
+👤 Nome: [nome]
+📚 Turma indicada: [turma]
+⏰ Horário preferido: [horário]
+
+Está tudo certo? (responda "sim" para confirmar ou me corrija o que estiver errado)
+
+Se o cliente corrigir algum dado, atualize e mostre a confirmação novamente.
+SOMENTE após o cliente responder "sim" (ou equivalente: "correto", "pode ser", "isso", "tá certo"), envie a mensagem de encerramento:
+
+Ótimo! Seus dados foram registrados. Em breve um de nossos consultores entrará em contato para passar os valores e próximos passos. 😊
+
+Até logo, [nome]! Qualquer dúvida, é só chamar.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TURMAS — RESPONDA COM CONFIANÇA, SEM "PROVAVELMENTE"
@@ -416,13 +438,38 @@ app.post('/webhook', async (req, res) => {
         // Garante que o histórico esteja carregado na RAM antes de processar
         await getHistorico(telefone);
  
-        botStatus.ultiWebhook = new Date().toISOString();
+
         const vendedor = await getVendedor();
         console.log(`📩 ${telefone}: ${mensagem} → vendedor: ${vendedor}`);
 
         try {
+                // Atualiza inatividade e reengajamento
+                ultimaAtividade[telefone] = Date.now();
+                reengajamentoEnviado[telefone] = false;
+
                 const reply = await askDeepSeek(telefone, mensagem);
-                const tipo = detectarTipo(mensagem, reply);
+                let tipo = detectarTipo(mensagem, reply);
+
+                // Extração de dados da resposta do bot para memória
+                if (!dadosLead[telefone]) {
+                        dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false };
+                }
+                
+                const nomeMatch = reply.match(/👤 Nome:\s*(.+)/);
+                const turmaMatch = reply.match(/📚 Turma indicada:\s*(.+)/);
+                const horarioMatch = reply.match(/⏰ Horário preferido:\s*(.+)/);
+                
+                if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].trim();
+                if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].trim();
+                if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].trim();
+                
+                if (reply.includes('Seus dados foram registrados')) {
+                        dadosLead[telefone].confirmado = true;
+                }
+
+                if (dadosLead[telefone].confirmado) {
+                        tipo = 'lead_confirmado';
+                }
 
                 console.log(`🤖 Resposta: ${reply} → tipo: ${tipo}`);
 
@@ -465,7 +512,8 @@ app.get('/status', (req, res) => {
 		modelo: botStatus.modelo,
 		fallbacksHoje: botStatus.fallbacksHoje,
 		ultimoWebhook: botStatus.ultimoWebhook || null,
-		uptime: Math.floor(process.uptime())
+		uptime: Math.floor(process.uptime()),
+		conversasAtivas: Object.keys(conversas).length
 	});
 });
 
@@ -483,5 +531,33 @@ app.get('/reset-all', (req, res) => {
         console.log('🔄 Toda memória resetada');
         res.send('Toda memória resetada ✅');
 });
+
+// Reengajamento após 24h de inatividade
+function checkInatividade() {
+	const agora = Date.now();
+	for (const telefone in ultimaAtividade) {
+		if (agora - ultimaAtividade[telefone] > 24 * 60 * 60 * 1000 && !reengajamentoEnviado[telefone]) {
+			const dados = dadosLead[telefone] || {};
+			let msg = '';
+			
+			if (!dados.nome) {
+				msg = "Olá! 😊 Ainda posso te ajudar com informações sobre nossos cursos? É só responder aqui!";
+			} else if (dados.nome && (!dados.turma || !dados.horario)) {
+				msg = `Oi, ${dados.nome}! Tudo bem? Ainda estou aqui caso queira continuar conhecendo nossos cursos. 😊`;
+			} else if (dados.nome && dados.turma && dados.horario && !dados.confirmado) {
+				msg = `Oi, ${dados.nome}! Enviei os seus dados para confirmar, mas ainda não recebi resposta. Gostaria de prosseguir com o cadastro?`;
+			}
+
+			if (msg) {
+				console.log(`⏳ Reengajamento disparado para ${telefone}`);
+				sendWhatsApp(telefone, msg);
+				reengajamentoEnviado[telefone] = true;
+			}
+		}
+	}
+}
+
+// Roda a cada 30 minutos
+setInterval(checkInatividade, 30 * 60 * 1000);
 
 app.listen(3000, () => console.log('🚀 Escola Bot rodando na porta 3000'));
