@@ -785,5 +785,4 @@ function checkInatividade() {
 // Roda a cada 30 minutos
 setInterval(checkInatividade, 30 * 60 * 1000);
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Escola Bot rodando na porta ${PORT}`));
+app.listen(3001, () => console.log('🚀 Escola Bot rodando na porta 3000'));
