@@ -560,12 +560,12 @@ async function getHistorico(telefone) {
                         // Busca nas mensagens do bot os dados já confirmados
                         data.forEach(m => {
                                 if (m.de === 'bot') {
-                                        const nomeMatch = m.mensagem.match(/👤 Nome:\s*(.+)/);
-                                        const turmaMatch = m.mensagem.match(/📚 Turma indicada:\s*(.+)/);
-                                        const horarioMatch = m.mensagem.match(/⏰ Horário preferido:\s*(.+)/);
-                                        if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].trim();
-                                        if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].trim();
-                                        if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].trim();
+                                        const nomeMatch = m.mensagem.match(/👤.*?Nome.*?:(.*?)(?=\n|$)/i);
+                                        const turmaMatch = m.mensagem.match(/📚.*?Turma.*?:(.*?)(?=\n|$)/i);
+                                        const horarioMatch = m.mensagem.match(/⏰.*?Hor[áa]rio.*?:(.*?)(?=\n|$)/i);
+                                        if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].replace(/\*/g, '').trim();
+                                        if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].replace(/\*/g, '').trim();
+                                        if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].replace(/\*/g, '').trim();
                                         if (m.mensagem.includes('Seus dados foram registrados')) {
                                                 dadosLead[telefone].confirmado = true;
                                                 dadosLead[telefone].notificado = true; // Evita re-notificar se já estava no histórico
@@ -661,13 +661,13 @@ app.post('/webhook', async (req, res) => {
                         dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false };
                 }
 
-                const nomeMatch = reply.match(/👤 Nome:\s*(.+)/);
-                const turmaMatch = reply.match(/📚 Turma indicada:\s*(.+)/);
-                const horarioMatch = reply.match(/⏰ Horário preferido:\s*(.+)/);
+                const nomeMatch = reply.match(/👤.*?Nome.*?:(.*?)(?=\n|$)/i);
+                const turmaMatch = reply.match(/📚.*?Turma.*?:(.*?)(?=\n|$)/i);
+                const horarioMatch = reply.match(/⏰.*?Hor[áa]rio.*?:(.*?)(?=\n|$)/i);
 
-                if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].trim();
-                if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].trim();
-                if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].trim();
+                if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].replace(/\*/g, '').trim();
+                if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].replace(/\*/g, '').trim();
+                if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].replace(/\*/g, '').trim();
 
                 if (reply.includes('Seus dados foram registrados')) {
                         dadosLead[telefone].confirmado = true;
