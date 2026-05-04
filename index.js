@@ -393,6 +393,24 @@ ${contextoRAG}`;
                 console.log(`🧠 Contexto RAG injetado (${ragResultados.length} itens)`);
         }
 
+        // Após injetar o RAG, injetar também os dados já coletados
+        const dados = dadosLead[telefone];
+        if (dados && (dados.nome || dados.turma || dados.horario)) {
+                const dadosColetados = [];
+                if (dados.nome) dadosColetados.push(`Nome: ${dados.nome}`);
+                if (dados.turma) dadosColetados.push(`Turma indicada: ${dados.turma}`);
+                if (dados.horario) dadosColetados.push(`Horário preferido: ${dados.horario}`);
+                if (dados.confirmado) dadosColetados.push(`Status: dados já confirmados pelo cliente`);
+
+                systemPromptFinal += `
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DADOS JÁ COLETADOS DESTE CLIENTE — NÃO PERGUNTE DE NOVO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${dadosColetados.join('\n')}
+IMPORTANTE: Esses dados já foram coletados. NÃO peça nome, idade ou horário novamente. Se o cliente quiser corrigir algum dado, atualize e mostre a confirmação.`;
+        }
+
         // Tentativa 1 — Groq chave principal
         if (process.env.GROQ_API_KEY) {
                 try {
@@ -486,7 +504,28 @@ async function getHistorico(telefone) {
                                 role: m.de === 'bot' ? 'assistant' : 'user',
                                 content: m.mensagem
                         }));
-                        console.log(`📜 Histórico carregado do Supabase para ${telefone} (${data.length} mensagens)`);
+
+                        // Reconstruir dadosLead a partir do histórico
+                        if (!dadosLead[telefone]) {
+                                dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false };
+                        }
+
+                        // Busca nas mensagens do bot os dados já confirmados
+                        data.forEach(m => {
+                                if (m.de === 'bot') {
+                                        const nomeMatch = m.mensagem.match(/👤 Nome:\s*(.+)/);
+                                        const turmaMatch = m.mensagem.match(/📚 Turma indicada:\s*(.+)/);
+                                        const horarioMatch = m.mensagem.match(/⏰ Horário preferido:\s*(.+)/);
+                                        if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].trim();
+                                        if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].trim();
+                                        if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].trim();
+                                        if (m.mensagem.includes('Seus dados foram registrados')) {
+                                                dadosLead[telefone].confirmado = true;
+                                        }
+                                }
+                        });
+
+                        console.log(`📜 Histórico + dados carregados para ${telefone}`);
                 } else {
                         // Se não houver histórico, inicializa vazio
                         conversas[telefone] = [];
