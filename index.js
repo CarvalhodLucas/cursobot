@@ -39,6 +39,7 @@ app.use((req, res, next) => {
 const ZAPI_INSTANCE = process.env.ZAPI_INSTANCE;
 const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 const ZAPI_CLIENT_TOKEN = process.env.ZAPI_CLIENT_TOKEN;
+const NUMERO_COORDENACAO = process.env.NUMERO_COORDENACAO;
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 let geminiModel;
@@ -323,6 +324,7 @@ REGRAS INVIOLÁVEIS
 - NUNCA ofereça intermediar ou encaminhar perguntas — isso não é função do bot.
 - NUNCA encaminhe para coordenação sem ter certeza que o cliente já é aluno. Na dúvida, trate como lead.
 - NUNCA invente dados sobre professores (nacionalidade, quantidade, nomes).
+- NUNCA responda a perguntas fora do contexto da escola de idiomas (ex: receitas, conhecimentos gerais, programação, etc). Se a pergunta não tiver relação com a escola, responda educadamente que você é a assistente virtual da escola e retorne o foco para os cursos.
 - Para qualquer pergunta factual sobre a escola sem resposta no bloco INFORMAÇÕES VERIFICADAS, use SEMPRE: "Boa pergunta! O comercial vai te responder isso com precisão. Posso registrar seu interesse enquanto isso?"`;
 geminiModel = genAI.getGenerativeModel({
         model: 'gemini-3.1-flash-lite-preview',
@@ -453,15 +455,60 @@ IMPORTANTE: Esses dados já foram coletados. NÃO peça nome, idade ou horário 
 
 async function sendWhatsApp(telefone, mensagem) {
         try {
+                const phoneLimpo = String(telefone).replace(/\D/g, '');
                 await axios.post(
                         `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-text`,
-                        { phone: telefone, message: mensagem },
+                        { phone: phoneLimpo, message: mensagem },
                         { headers: { 'Content-Type': 'application/json', 'Client-Token': ZAPI_CLIENT_TOKEN } }
                 );
         } catch (err) {
                 console.error('Erro ao enviar:', err.response?.data || err.message);
         }
 }
+
+async function notificarVendedor(telefone, vendedor) {
+        const dados = dadosLead[telefone];
+        if (!dados || !dados.confirmado) return;
+
+        // Pega o número do vendedor pela variável de ambiente
+        const numeroVendedor = vendedor === 'Rebeca'
+                ? process.env.NUMERO_REBECA
+                : process.env.NUMERO_PAULO;
+
+        if (!numeroVendedor) {
+                console.warn(`⚠️ Número do vendedor ${vendedor} não configurado`);
+                return;
+        }
+
+        const msg = `🔔 *Novo lead confirmado!*
+
+👤 Nome: ${dados.nome || '—'}
+📚 Turma: ${dados.turma || '—'}
+⏰ Horário: ${dados.horario || '—'}
+📱 Contato: ${telefone}
+
+Entre em contato para fechar a matrícula!`;
+
+        await sendWhatsApp(numeroVendedor, msg);
+        console.log(`✅ Lead notificado para ${vendedor} (${numeroVendedor})`);
+}
+
+async function notificarCoordenacao(telefone) {
+        if (!NUMERO_COORDENACAO) {
+                console.warn('⚠️ Número da coordenação não configurado');
+                return;
+        }
+
+        const msg = `📋 *Aluno aguardando atendimento!*
+
+📱 Contato: ${telefone}
+
+Este número foi identificado como aluno e está aguardando suporte da coordenação.`;
+
+        await sendWhatsApp(NUMERO_COORDENACAO, msg);
+        console.log(`✅ Coordenação notificada para atender ${telefone}`);
+}
+
 
 async function salvarMensagem(telefone, mensagem, de, vendedor, tipo = 'desconhecido') {
         try {
@@ -507,7 +554,7 @@ async function getHistorico(telefone) {
 
                         // Reconstruir dadosLead a partir do histórico
                         if (!dadosLead[telefone]) {
-                                dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false };
+                                dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false };
                         }
 
                         // Busca nas mensagens do bot os dados já confirmados
@@ -521,6 +568,7 @@ async function getHistorico(telefone) {
                                         if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].trim();
                                         if (m.mensagem.includes('Seus dados foram registrados')) {
                                                 dadosLead[telefone].confirmado = true;
+                                                dadosLead[telefone].notificado = true; // Evita re-notificar se já estava no histórico
                                         }
                                 }
                         });
@@ -603,9 +651,14 @@ app.post('/webhook', async (req, res) => {
                 const reply = await askAI(telefone, mensagem);
                 let tipo = detectarTipo(mensagem, reply);
 
+                if (tipo === 'aluno' && !reengajamentoEnviado[`coord_${telefone}`]) {
+                        reengajamentoEnviado[`coord_${telefone}`] = true;
+                        await notificarCoordenacao(telefone);
+                }
+
                 // Extração de dados da resposta do bot para memória
                 if (!dadosLead[telefone]) {
-                        dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false };
+                        dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false };
                 }
 
                 const nomeMatch = reply.match(/👤 Nome:\s*(.+)/);
@@ -620,7 +673,11 @@ app.post('/webhook', async (req, res) => {
                         dadosLead[telefone].confirmado = true;
                 }
 
-                if (dadosLead[telefone].confirmado) {
+                if (dadosLead[telefone].confirmado && !dadosLead[telefone].notificado) {
+                        tipo = 'lead_confirmado';
+                        dadosLead[telefone].notificado = true;
+                        await notificarVendedor(telefone, vendedor);
+                } else if (dadosLead[telefone].confirmado) {
                         tipo = 'lead_confirmado';
                 }
 
