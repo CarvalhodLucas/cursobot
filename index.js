@@ -7,11 +7,31 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const app = express();
 app.use(express.json());
 
-// CORS — permite chamadas do CRM (browser)
+// CORS — restringe às origens configuradas em ALLOWED_ORIGINS (vírgula separada)
+// Em desenvolvimento (variável não definida), aceita qualquer origem.
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
+        ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+        : null; // null = modo dev, sem restrição
+
 app.use((req, res, next) => {
-        res.header('Access-Control-Allow-Origin', '*');
+        const origin = req.headers.origin;
+
+        if (!ALLOWED_ORIGINS) {
+                // Modo dev: libera tudo
+                res.header('Access-Control-Allow-Origin', '*');
+        } else if (origin && ALLOWED_ORIGINS.includes(origin)) {
+                res.header('Access-Control-Allow-Origin', origin);
+                res.header('Vary', 'Origin');
+        } else if (!origin) {
+                // Requisições server-to-server (sem cabeçalho Origin) sempre passam
+                // (ex: webhook do Z-API)
+        } else {
+                // Origem não permitida
+                return res.status(403).json({ error: 'Origem não autorizada' });
+        }
+
         res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        res.header('Access-Control-Allow-Headers', 'Content-Type');
+        res.header('Access-Control-Allow-Headers', 'Content-Type, x-admin-token');
         if (req.method === 'OPTIONS') return res.sendStatus(204);
         next();
 });
@@ -30,6 +50,9 @@ const conversas = {};
 const dadosLead = {};
 const ultimaAtividade = {};
 const reengajamentoEnviado = {};
+
+// Cache de vendedor por telefone para a sessão atual
+const vendedorPorTelefone = {};
 
 // Rodízio para o período da tarde
 let ultimoVendedorTarde = 'Paulo';
@@ -65,42 +88,70 @@ async function getVendedor() {
         const hora = agora.getHours() + agora.getMinutes() / 60;
         const dia = agora.getDay();
 
-        // 1. Sábado (dia 6)
-        if (dia === 6) {
-                const semana = Math.ceil(agora.getDate() / 7);
-                const paridade = semana % 2 === 0 ? 'par' : 'impar';
-                const match = escala.find(e => e.dia_semana === 6 && (e.sabado_paridade === paridade || e.sabado_paridade === 'sempre'));
-                if (match) return match.vendedor;
-        }
+        // 1. Domingo — Fallback
+        if (dia === 0) return 'Paulo';
 
-        // 2. Domingo e Dias Úteis
-        let matches = escala.filter(e => {
+        // 2. Busca match na escala (com suporte a sabado_paridade)
+        const diaDoProjeto = agora.getDate();
+        const ehSabado = dia === 6;
+        const ehPar = diaDoProjeto % 2 === 0;
+
+        // Usamos uma pequena margem para evitar problemas de precisão com floats (16.83)
+        const match = escala.find(e => {
                 const diaMatch = e.dia_semana === dia;
-                const hInicio = e.hora_inicio !== null ? e.hora_inicio : 0;
-                const hFim = e.hora_fim !== null ? e.hora_fim : 24;
-                const horaMatch = hora >= hInicio && hora < hFim;
-                return diaMatch && horaMatch;
+                const horaMatch = hora >= (e.hora_inicio - 0.02) && hora < (e.hora_fim + 0.02);
+                if (!diaMatch || !horaMatch) return false;
+
+                // Filtra por paridade do sábado quando configurado
+                if (ehSabado && e.sabado_paridade && e.sabado_paridade !== 'sempre') {
+                        if (e.sabado_paridade === 'par' && !ehPar) return false;
+                        if (e.sabado_paridade === 'impar' && ehPar) return false;
+                }
+                return true;
         });
 
-        if (matches.length === 0 && dia >= 1 && dia <= 5) {
-                matches = escala.filter(e => {
-                        const diaMatch = e.dia_semana === null;
-                        const hInicio = e.hora_inicio !== null ? e.hora_inicio : 0;
-                        const hFim = e.hora_fim !== null ? e.hora_fim : 24;
-                        const horaMatch = hora >= hInicio && hora < hFim;
-                        return diaMatch && horaMatch;
-                });
+        if (!match) {
+                console.log(`⚠️ Nenhum vendedor escalado para dia ${dia} às ${hora.toFixed(2)}h. Usando fallback.`);
+                return 'Paulo';
         }
 
-        if (matches.length === 0) return 'Paulo';
-
-        // Se houver qualquer regra de rodízio nos matches, alterna entre os vendedores
-        if (matches.some(m => m.tipo === 'rodizio')) {
+        // 3. Rodízio
+        if (match.vendedor === 'rodizio' || match.tipo === 'rodizio') {
                 ultimoVendedorTarde = ultimoVendedorTarde === 'Paulo' ? 'Rebeca' : 'Paulo';
                 return ultimoVendedorTarde;
         }
 
-        return matches[0].vendedor;
+        return match.vendedor;
+}
+
+async function getVendedorDoTelefone(telefone) {
+        // Se já tem em cache, usa o mesmo
+        if (vendedorPorTelefone[telefone]) return vendedorPorTelefone[telefone];
+
+        // Verifica se já existe no banco
+        try {
+                const { data } = await supabase
+                        .from('conversas')
+                        .select('vendedor')
+                        .eq('telefone', telefone)
+                        .order('created_at', { ascending: true })
+                        .limit(1);
+
+                if (data && data.length > 0 && data[0].vendedor) {
+                        // Já tem histórico — mantém o mesmo vendedor
+                        vendedorPorTelefone[telefone] = data[0].vendedor;
+                        console.log(`👤 ${telefone} → vendedor fixo: ${data[0].vendedor}`);
+                        return data[0].vendedor;
+                }
+        } catch (err) {
+                console.error('Erro ao buscar vendedor do histórico:', err.message);
+        }
+
+        // Novo número — atribui vendedor do horário atual e salva em cache
+        const vendedor = await getVendedor();
+        vendedorPorTelefone[telefone] = vendedor;
+        console.log(`👤 ${telefone} → novo lead, vendedor: ${vendedor}`);
+        return vendedor;
 }
 
 
@@ -175,7 +226,8 @@ ESTILO DE RESPOSTA — REGRAS RÍGIDAS
 - Não repita "Olá, seja bem-vindo" em mensagens depois da primeira.
 - Não diga a mesma frase duas vezes na mesma mensagem.
 - Espelhe o tom do cliente: se ele escreve formal, responda formal; se usa "kkk" e abreviações, responda mais leve (sem exagerar).
-- Use no máximo 1 emoji por mensagem.
+- Use no máximo 1 emoji por mensagem. Se usou emoji em uma mensagem, a PRÓXIMA obrigatoriamente não usa emoji. Nunca use emoji em duas mensagens consecutivas.
+- Emojis são opcionais — use só quando adicionar calor à conversa, não por hábito. Na dúvida, não use.
 - Nunca termine uma recusa com "Ótimo!" ou expressões positivas desconectadas do contexto.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -266,7 +318,9 @@ REGRAS INVIOLÁVEIS
 - NUNCA invente informações que não estejam neste prompt.
 - NUNCA responda dúvidas de alunos — encaminhe sempre.
 - NUNCA confirme localização baseada no que o cliente disse.
-- NUNCA mencione o comercial mais de uma vez pelo mesmo assunto. Se já redirecionou e o cliente insistir, diga: "Entendo! Assim que o comercial entrar em contato, ele te explica tudo sobre isso."
+- NUNCA mencione o comercial mais de uma vez pelo mesmo assunto. Se já redirecionou e o cliente insistir, diga: "Assim que o comercial entrar em contato, ele te explica tudo sobre isso."
+- NUNCA pergunte se o cliente quer que você "encaminhe" ou "envie" a pergunta para o comercial. O comercial já vai entrar em contato automaticamente. Apenas informe: "Essa informação o comercial te passa quando entrar em contato!"
+- NUNCA ofereça intermediar ou encaminhar perguntas — isso não é função do bot.
 - NUNCA encaminhe para coordenação sem ter certeza que o cliente já é aluno. Na dúvida, trate como lead.
 - NUNCA invente dados sobre professores (nacionalidade, quantidade, nomes).
 - Para qualquer pergunta factual sobre a escola sem resposta no bloco INFORMAÇÕES VERIFICADAS, use SEMPRE: "Boa pergunta! O comercial vai te responder isso com precisão. Posso registrar seu interesse enquanto isso?"`;
@@ -499,7 +553,7 @@ app.post('/webhook', async (req, res) => {
         await getHistorico(telefone);
 
 
-        const vendedor = await getVendedor();
+        const vendedor = await getVendedorDoTelefone(telefone);
         console.log(`📩 ${telefone}: ${mensagem} → vendedor: ${vendedor}`);
 
         try {
@@ -578,17 +632,31 @@ app.get('/status', (req, res) => {
         });
 });
 
+// Token simples para proteger rotas administrativas
+function checkAdminToken(req, res) {
+        const token = req.headers['x-admin-token'] || req.query.token;
+        if (process.env.ADMIN_TOKEN && token !== process.env.ADMIN_TOKEN) {
+                res.status(401).send('Não autorizado ❌');
+                return false;
+        }
+        return true;
+}
+
 // Rota para resetar memória de um número
 app.get('/reset/:telefone', (req, res) => {
+        if (!checkAdminToken(req, res)) return;
         const telefone = req.params.telefone;
         delete conversas[telefone];
+        delete vendedorPorTelefone[telefone];
         console.log(`🔄 Memória resetada para ${telefone}`);
         res.send(`Memória resetada para ${telefone} ✅`);
 });
 
 // Rota para resetar TUDO
 app.get('/reset-all', (req, res) => {
+        if (!checkAdminToken(req, res)) return;
         Object.keys(conversas).forEach(k => delete conversas[k]);
+        Object.keys(vendedorPorTelefone).forEach(k => delete vendedorPorTelefone[k]);
         console.log('🔄 Toda memória resetada');
         res.send('Toda memória resetada ✅');
 });
