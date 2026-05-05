@@ -1400,11 +1400,11 @@
   function renderNumerosSidebar() {
     const raw = localStorage.getItem('crm_numeros');
     const defaultNums = [
-      { id: 'coord', nome: 'Coordenação', vendedor: 'coord', status: 'ativo' },
       { id: 'paulo', nome: 'Paulo', vendedor: 'Paulo', status: 'ativo' },
       { id: 'rebeca', nome: 'Rebeca', vendedor: 'Rebeca', status: 'ativo' }
     ];
-    const nums = raw ? JSON.parse(raw) : defaultNums;
+    let nums = raw ? JSON.parse(raw) : defaultNums;
+    nums = nums.filter(n => n.id !== 'coord');
     if (!raw) localStorage.setItem('crm_numeros', JSON.stringify(defaultNums));
 
     const colors = { ativo: 'var(--green)', inativo: 'var(--yellow)', desconectado: 'var(--muted2)' };

@@ -403,12 +403,31 @@ ${contextoRAG}`;
 
         // Após injetar o RAG, injetar também os dados já coletados
         const dados = dadosLead[telefone];
-        if (dados && (dados.nome || dados.turma || dados.horario)) {
+        if (dados && dados.confirmado) {
+                // Lead já encerrado — modo pós-confirmação
+                systemPromptFinal += `
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STATUS DO ATENDIMENTO — LEAD JÁ REGISTRADO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Este cliente JÁ TEVE SEUS DADOS REGISTRADOS com sucesso:
+- Nome: ${dados.nome || '—'}
+- Turma indicada: ${dados.turma || '—'}
+- Horário preferido: ${dados.horario || '—'}
+
+REGRAS OBRIGATÓRIAS PARA ESTE ATENDIMENTO:
+1. NUNCA peça nome, idade, horário ou turma novamente — esses dados já foram coletados.
+2. O comercial já foi notificado e entrará em contato em breve.
+3. Se o cliente fizer perguntas sobre cursos, responda normalmente usando as informações disponíveis.
+4. Se o cliente perguntar sobre o status do cadastro, diga: "Seus dados já estão registrados! O comercial entrará em contato em breve."
+5. Seja cordial e breve. NÃO reinicie o fluxo de qualificação.
+6. Responda no idioma que o cliente estiver usando.`;
+        } else if (dados && (dados.nome || dados.turma || dados.horario)) {
+                // Lead parcialmente preenchido — injeta dados coletados
                 const dadosColetados = [];
                 if (dados.nome) dadosColetados.push(`Nome: ${dados.nome}`);
                 if (dados.turma) dadosColetados.push(`Turma indicada: ${dados.turma}`);
                 if (dados.horario) dadosColetados.push(`Horário preferido: ${dados.horario}`);
-                if (dados.confirmado) dadosColetados.push(`Status: dados já confirmados pelo cliente`);
 
                 systemPromptFinal += `
 
@@ -486,6 +505,7 @@ async function notificarVendedor(telefone, vendedor) {
                 return;
         }
 
+        console.log(`📡 Notificando vendedor ${vendedor} para lead ${telefone}. Dados:`, JSON.stringify(dados));
         const telefoneLimpo = String(telefone).replace(/\D/g, '');
         const msg = `🔔 *Novo lead confirmado!*
 
@@ -568,12 +588,12 @@ async function getHistorico(telefone) {
                         // Busca nas mensagens do bot os dados já confirmados
                         data.forEach(m => {
                                 if (m.de === 'bot') {
-                                        const nomeMatch = m.mensagem.match(/👤.*?Nome.*?:(.*?)(?=\n|$)/i);
-                                        const turmaMatch = m.mensagem.match(/📚.*?Turma.*?:(.*?)(?=\n|$)/i);
-                                        const horarioMatch = m.mensagem.match(/⏰.*?Hor[áa]rio.*?:(.*?)(?=\n|$)/i);
-                                        if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].replace(/\*/g, '').trim();
-                                        if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].replace(/\*/g, '').trim();
-                                        if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].replace(/\*/g, '').trim();
+                                        const nomeMatch = m.mensagem.match(/(?:👤|Nome).*?:\s*([^\n\*]+)/i);
+                                        const turmaMatch = m.mensagem.match(/(?:📚|Turma).*?:\s*([^\n\*]+)/i);
+                                        const horarioMatch = m.mensagem.match(/(?:⏰|Hor[áa]rio).*?:\s*([^\n\*]+)/i);
+                                        if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].trim();
+                                        if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].trim();
+                                        if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].trim();
                                         if (m.mensagem.includes('Seus dados foram registrados')) {
                                                 dadosLead[telefone].confirmado = true;
                                                 dadosLead[telefone].notificado = true; // Evita re-notificar se já estava no histórico
@@ -728,13 +748,13 @@ Para continuar, basta responder normalmente. Caso queira que seus dados sejam re
                         dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false, consentimentoDado: true };
                 }
 
-                const nomeMatch = reply.match(/👤.*?Nome.*?:(.*?)(?=\n|$)/i);
-                const turmaMatch = reply.match(/📚.*?Turma.*?:(.*?)(?=\n|$)/i);
-                const horarioMatch = reply.match(/⏰.*?Hor[áa]rio.*?:(.*?)(?=\n|$)/i);
+                const nomeMatch = reply.match(/(?:👤|Nome).*?:\s*([^\n\*]+)/i);
+                const turmaMatch = reply.match(/(?:📚|Turma).*?:\s*([^\n\*]+)/i);
+                const horarioMatch = reply.match(/(?:⏰|Hor[áa]rio).*?:\s*([^\n\*]+)/i);
 
-                if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].replace(/\*/g, '').trim();
-                if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].replace(/\*/g, '').trim();
-                if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].replace(/\*/g, '').trim();
+                if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].trim();
+                if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].trim();
+                if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].trim();
 
                 if (reply.includes('Seus dados foram registrados')) {
                         dadosLead[telefone].confirmado = true;
@@ -758,6 +778,10 @@ Para continuar, basta responder normalmente. Caso queira que seus dados sejam re
                 salvarMensagem(telefone, reply, 'bot', vendedor, tipo);
         } catch (err) {
                 console.error('Erro:', err.response?.data || err.message);
+                // Fallback: responde ao cliente para não deixá-lo sem retorno
+                try {
+                        await sendWhatsApp(telefone, 'Desculpe, tive um probleminha aqui! Pode repetir sua mensagem? 😊');
+                } catch (_) {}
         }
 });
 
