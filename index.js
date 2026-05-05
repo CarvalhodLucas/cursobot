@@ -192,9 +192,9 @@ async function buscarRAG(mensagem) {
 	const palavras = mensagem
 		.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
 		.toLowerCase()
-		.replace(/[^a-z\s]/g, '')
+		.replace(/[^a-z0-9\s]/g, '')
 		.split(/\s+/)
-		.filter(p => p.length > 2)
+		.filter(p => p.length > 1)
 		.map(p => stemPortugues(p));
 
 	if (!palavras.length) return [];
@@ -386,8 +386,9 @@ async function askAI(telefone, mensagem) {
         conversas[telefone].push({ role: 'user', content: mensagem });
         if (conversas[telefone].length > 20) conversas[telefone] = conversas[telefone].slice(-20);
 
-        // Busca RAG e monta prompt final
-        const ragResultados = await buscarRAG(mensagem);
+        // Busca RAG usando o contexto das últimas 3 mensagens para pegar referências como "15" respondendo a "qual a sua idade"
+        const contextoRecente = conversas[telefone].slice(-3).map(m => m.content).join(' ');
+        const ragResultados = await buscarRAG(contextoRecente);
         let systemPromptFinal = SYSTEM_PROMPT;
         if (ragResultados.length > 0) {
                 const contextoRAG = ragResultados.map(r => `- ${r.resposta}`).join('\n');
