@@ -768,13 +768,22 @@ app.post('/simulate', async (req, res) => {
         if (!mensagem) return res.status(400).json({ error: 'mensagem is required' });
 
         const telefone = 'simulador_crm';
-        // Cria histórico limpo para a simulação
-        conversas[telefone] = [];
+        
+        // Comando especial para limpar a memória do simulador
+        if (mensagem.trim().toLowerCase() === '/clear') {
+                conversas[telefone] = [];
+                // Também limpa os dados provisórios do simulador, se houver
+                if (dadosLead[telefone]) delete dadosLead[telefone];
+                return res.json({ reply: '🔄 Memória do simulador reiniciada!', tipo: 'sistema', modelo: botStatus.modelo });
+        }
+
+        // Se não tiver histórico (ou foi recém limpo), inicializa
+        if (!conversas[telefone]) conversas[telefone] = [];
 
         try {
                 const reply = await askAI(telefone, mensagem);
                 const tipo = detectarTipo(mensagem, reply);
-                delete conversas[telefone]; // limpa memória depois
+                // REMOVIDO: delete conversas[telefone]; // Mantém a memória
                 res.json({ reply, tipo, modelo: botStatus.modelo });
         } catch (err) {
                 console.error('Erro na simulação:', err.message);
