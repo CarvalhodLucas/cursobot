@@ -57,6 +57,7 @@ const vendedorPorTelefone = {};
 
 // Rodízio para o período da tarde
 let ultimoVendedorTarde = 'Paulo';
+let ultimoVendedorFallback = 'Paulo';
 
 // Status do bot para o CRM
 const botStatus = {
@@ -90,7 +91,10 @@ async function getVendedor() {
         const dia = agora.getDay();
 
         // 1. Domingo — Fallback
-        if (dia === 0) return 'Paulo';
+        if (dia === 0) {
+                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebeca' : 'Paulo';
+                return ultimoVendedorFallback;
+        }
 
         // 2. Busca match na escala (com suporte a sabado_paridade)
         const diaDoProjeto = agora.getDate();
@@ -112,8 +116,9 @@ async function getVendedor() {
         });
 
         if (!match) {
-                console.log(`⚠️ Nenhum vendedor escalado para dia ${dia} às ${hora.toFixed(2)}h. Usando fallback.`);
-                return 'Paulo';
+                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebeca' : 'Paulo';
+                console.log(`⚠️ Nenhum vendedor escalado para dia ${dia} às ${hora.toFixed(2)}h. Usando fallback: ${ultimoVendedorFallback}`);
+                return ultimoVendedorFallback;
         }
 
         // 3. Rodízio
@@ -480,12 +485,13 @@ async function notificarVendedor(telefone, vendedor) {
                 return;
         }
 
+        const telefoneLimpo = String(telefone).replace(/\D/g, '');
         const msg = `🔔 *Novo lead confirmado!*
 
 👤 Nome: ${dados.nome || '—'}
 📚 Turma: ${dados.turma || '—'}
 ⏰ Horário: ${dados.horario || '—'}
-📱 Contato: ${telefone}
+📱 Contato: +${telefoneLimpo}
 
 Entre em contato para fechar a matrícula!`;
 
@@ -499,9 +505,10 @@ async function notificarCoordenacao(telefone) {
                 return;
         }
 
+        const telefoneLimpo = String(telefone).replace(/\D/g, '');
         const msg = `📋 *Aluno aguardando atendimento!*
 
-📱 Contato: ${telefone}
+📱 Contato: +${telefoneLimpo}
 
 Este número foi identificado como aluno e está aguardando suporte da coordenação.`;
 
@@ -554,7 +561,7 @@ async function getHistorico(telefone) {
 
                         // Reconstruir dadosLead a partir do histórico
                         if (!dadosLead[telefone]) {
-                                dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false };
+                                dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false, consentimentoDado: true };
                         }
 
                         // Busca nas mensagens do bot os dados já confirmados
@@ -583,6 +590,30 @@ async function getHistorico(telefone) {
                 // Em caso de erro, garante que a conversa seja inicializada para não quebrar o fluxo
                 conversas[telefone] = [];
         }
+}
+
+async function verificarConsentimento(telefone) {
+  // Verifica se já deu consentimento nesta sessão
+  if (dadosLead[telefone]?.consentimentoDado) return true;
+
+  // Verifica se já existe histórico no banco (se existe, já deu consentimento antes)
+  try {
+    const { data } = await supabase
+      .from('conversas')
+      .select('id')
+      .eq('telefone', telefone)
+      .limit(1);
+    
+    if (data && data.length > 0) {
+      if (!dadosLead[telefone]) dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false, consentimentoDado: true };
+      dadosLead[telefone].consentimentoDado = true;
+      return true;
+    }
+  } catch (err) {
+    console.error('Erro ao verificar consentimento:', err.message);
+  }
+
+  return false;
 }
 
 // Detecta se é aluno ou lead
@@ -639,8 +670,43 @@ app.post('/webhook', async (req, res) => {
         // Garante que o histórico esteja carregado na RAM antes de processar
         await getHistorico(telefone);
 
+        // Verifica se pediu remoção de dados
+        if (mensagem.toUpperCase().includes('REMOVER MEUS DADOS')) {
+                // Deleta do Supabase
+                await supabase.from('conversas').delete().eq('telefone', telefone);
+                await supabase.from('status_de_leads').delete().eq('telefone', telefone);
+                
+                // Limpa da RAM
+                delete conversas[telefone];
+                delete dadosLead[telefone];
+                delete ultimaAtividade[telefone];
+                delete vendedorPorTelefone[telefone];
+
+                await sendWhatsApp(telefone, 'Seus dados foram removidos com sucesso. Obrigado! 😊');
+                return;
+        }
+
+        const jaConsentiu = await verificarConsentimento(telefone);
 
         const vendedor = await getVendedorDoTelefone(telefone);
+
+        if (!jaConsentiu) {
+                // Primeira mensagem do número — envia aviso de LGPD
+                const msgLGPD = `Olá! 😊 Antes de começar, informamos que este atendimento é realizado por uma assistente virtual e que os dados desta conversa (número de telefone e mensagens) serão armazenados para fins de atendimento, conforme a Lei Geral de Proteção de Dados (LGPD).
+
+Para continuar, basta responder normalmente. Caso queira que seus dados sejam removidos, envie "REMOVER MEUS DADOS" a qualquer momento.`;
+
+                await sendWhatsApp(telefone, msgLGPD);
+
+                // Inicializa o lead com consentimento pendente mas continua o fluxo
+                if (!dadosLead[telefone]) dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false, consentimentoDado: false };
+                dadosLead[telefone].consentimentoDado = true; // Considera consentido ao continuar
+
+                // Salva a mensagem do cliente normalmente
+                await salvarMensagem(telefone, mensagem, 'cliente', vendedor, 'desconhecido');
+                await salvarMensagem(telefone, msgLGPD, 'bot', vendedor, 'desconhecido');
+                return; // Para aqui — na próxima mensagem segue o fluxo normal
+        }
         console.log(`📩 ${telefone}: ${mensagem} → vendedor: ${vendedor}`);
 
         try {
@@ -658,7 +724,7 @@ app.post('/webhook', async (req, res) => {
 
                 // Extração de dados da resposta do bot para memória
                 if (!dadosLead[telefone]) {
-                        dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false };
+                        dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false, consentimentoDado: true };
                 }
 
                 const nomeMatch = reply.match(/👤.*?Nome.*?:(.*?)(?=\n|$)/i);
