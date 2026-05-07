@@ -713,9 +713,11 @@ app.post('/webhook', async (req, res) => {
 
         if (!jaConsentiu) {
                 // Primeira mensagem do número — envia aviso de LGPD
-                const msgLGPD = `Olá! 😊 Antes de começar, informamos que este atendimento é realizado por uma assistente virtual e que os dados desta conversa (número de telefone e mensagens) serão armazenados para fins de atendimento, conforme a Lei Geral de Proteção de Dados (LGPD).
+                const msgLGPD = `Olá! Sou a assistente virtual da escola. 😊
 
-Para continuar, basta responder normalmente. Caso queira que seus dados sejam removidos, envie "REMOVER MEUS DADOS" a qualquer momento.`;
+Este atendimento é automático e os dados desta conversa serão armazenados conforme a LGPD. Para remover seus dados, envie "REMOVER MEUS DADOS".
+
+Como posso te ajudar?`;
 
                 await sendWhatsApp(telefone, msgLGPD);
 
@@ -784,6 +786,30 @@ Para continuar, basta responder normalmente. Caso queira que seus dados sejam re
                 } catch (_) {}
         }
 });
+
+app.post('/webhook-vendedor', async (req, res) => {
+	res.sendStatus(200);
+
+	const body = req.body;
+	if (body.isGroup) return;
+
+	const telefone = body.phone;
+	const mensagem = body.text?.message;
+	if (!telefone || !mensagem) return;
+
+	const vendedor = req.query.vendedor || 'desconhecido';
+	const de = body.fromMe ? 'vendedor' : 'cliente';
+
+	console.log(`📱 [${vendedor}] ${de}: ${mensagem}`);
+
+	try {
+		await salvarMensagem(telefone, mensagem, de, vendedor, 'conversa_vendedor');
+		console.log(`✅ Conversa vendedor salva — ${vendedor} | ${de} | ${telefone}`);
+	} catch (err) {
+		console.error('Erro ao salvar conversa vendedor:', err.message);
+	}
+});
+
 
 app.get('/', (req, res) => res.send('Escola Bot rodando ✅'));
 
