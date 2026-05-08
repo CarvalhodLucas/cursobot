@@ -606,10 +606,6 @@ async function getHistorico(telefone) {
                                         if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].trim();
                                         if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].trim();
                                         if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].trim();
-                                        if (m.mensagem.includes('Seus dados foram registrados')) {
-                                                dadosLead[telefone].confirmado = true;
-                                                dadosLead[telefone].notificado = true; // Evita re-notificar se já estava no histórico
-                                        }
                                 }
                         });
 
