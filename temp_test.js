@@ -175,48 +175,48 @@ async function getBaseConhecimento() {
 }
 
 function stemPortugues(palavra) {
-	return palavra
-		.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-		.toLowerCase()
-		.replace(/ores$|ões$|oes$|ção$|cao$|es$|os$|as$|is$|ns$|s$/, '')
-		.replace(/mente$|ando$|endo$|ção$/, '')
-		.trim();
+        return palavra
+                .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase()
+                .replace(/ores$|ões$|oes$|ção$|cao$|es$|os$|as$|is$|ns$|s$/, '')
+                .replace(/mente$|ando$|endo$|ção$/, '')
+                .trim();
 }
 
 async function buscarRAG(mensagem) {
-	const palavras = mensagem
-		.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-		.toLowerCase()
-		.replace(/[^a-z\s]/g, '')
-		.split(/\s+/)
-		.filter(p => p.length > 2)
-		.map(p => stemPortugues(p));
+        const palavras = mensagem
+                .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                .toLowerCase()
+                .replace(/[^a-z\s]/g, '')
+                .split(/\s+/)
+                .filter(p => p.length > 2)
+                .map(p => stemPortugues(p));
 
-	if (!palavras.length) return [];
+        if (!palavras.length) return [];
 
-	const data = await getBaseConhecimento();
-	if (!data || !data.length) return [];
+        const data = await getBaseConhecimento();
+        if (!data || !data.length) return [];
 
-	const seen = new Set();
-	return data.filter(item => {
-		if (!item.palavras_chave) return false;
-		const kwNorm = item.palavras_chave
-			.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-			.toLowerCase();
-		const match = palavras.some(p => kwNorm.includes(p));
-		if (match && !seen.has(item.categoria)) {
-			seen.add(item.categoria);
-			return true;
-		}
-		return false;
-	});
+        const seen = new Set();
+        return data.filter(item => {
+                if (!item.palavras_chave) return false;
+                const kwNorm = item.palavras_chave
+                        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                        .toLowerCase();
+                const match = palavras.some(p => kwNorm.includes(p));
+                if (match && !seen.has(item.categoria)) {
+                        seen.add(item.categoria);
+                        return true;
+                }
+                return false;
+        });
 }
 
 
 
 
 
-const SYSTEM_PROMPT = `Você é a assistente virtual de uma escola de idiomas localizada no Recreio dos Bandeirantes, Rio de Janeiro.
+const SYSTEM_PROMPT = `Você é a assistente virtual de uma escola de idiomas do CNA-Recreio localizada no Recreio dos Bandeirantes, Rio de Janeiro.
 Fale sempre em português, mas se alguem falar com voce em ingles, pode responder em ingles.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -716,7 +716,7 @@ app.post('/webhook', async (req, res) => {
                 // Fallback: responde ao cliente para não deixá-lo sem retorno
                 try {
                         await sendWhatsApp(telefone, 'Desculpe, tive um probleminha aqui! Pode repetir sua mensagem? 😊');
-                } catch (_) {}
+                } catch (_) { }
         }
 });
 

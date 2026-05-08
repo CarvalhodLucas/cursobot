@@ -243,10 +243,20 @@ Antes de responder, classifique a mensagem:
 
 ALUNO (já estuda na escola) vs LEAD (quer se matricular):
 - Se houver sinal EXPLÍCITO de que JÁ É ALUNO (ex: "perdi minha aula", "sou aluno", "minha turma", "minha professora"):
-  → Responda: "Entendido! Vou te encaminhar para a coordenação para que resolvam isso. Um momento! 😊"
-- Se houver DÚVIDA (perguntas sobre professores, aulas, horários, turmas):
+  → Responda DIRETAMENTE: "Entendido! Vou encaminhar para a coordenação agora. Um momento!"
+  → NÃO faça perguntas. NÃO peça mais informações. Encaminhe imediatamente.
+
+SINAIS ADICIONAIS DE ALUNO — Qualquer mensagem contendo:
+- "mensalidade", "boleto", "pagamento", "vencimento", "pagar" → É ALUNO
+- Nome de pessoa + valor ou mês (ex: "Mensalidade de abril Pedro Cardoso") → É ALUNO
+- Referência a data de aula ou horário de turma específica → É ALUNO
+- Nome de professor (ex: "professora Ana", "prof João") → É ALUNO
+- "falta", "reposição", "cancelar aula", "trocar horário" → É ALUNO
+→ Nesses casos: responda DIRETAMENTE "Entendido! Vou encaminhar para a coordenação agora. Um momento!" e NÃO faça nenhuma pergunta.
+
+- Se houver DÚVIDA GENUÍNA (perguntas genéricas sobre professores, aulas, horários, turmas sem contexto de aluno):
   → NÃO assuma que é aluno. Responda à dúvida e siga o fluxo de lead.
-- PRIORIDADE LEAD: Na dúvida, trate como LEAD. É melhor explicar algo para um aluno do que expulsar um lead mandando-o para a coordenação.
+- PRIORIDADE LEAD: Na dúvida sem sinais claros de aluno, trate como LEAD. É melhor explicar algo para um aluno do que expulsar um lead mandando-o para a coordenação.
 
 LEAD (quer se matricular) — sinais: "quero aprender", "tem curso", "vi o instagram", "vi anúncio", "quanto custa", "tem vaga", "como funciona", "meu filho", "minha filha":
 → Siga o fluxo de qualificação abaixo.
@@ -584,6 +594,8 @@ async function getHistorico(telefone) {
                         if (!dadosLead[telefone]) {
                                 dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false, consentimentoDado: true };
                         }
+                        // Já tem histórico = consentimento dado anteriormente
+                        dadosLead[telefone].consentimentoDado = true;
 
                         // Busca nas mensagens do bot os dados já confirmados
                         data.forEach(m => {
@@ -617,7 +629,8 @@ async function verificarConsentimento(telefone) {
   // Verifica se já deu consentimento nesta sessão
   if (dadosLead[telefone]?.consentimentoDado) return true;
 
-  // Verifica se já existe histórico no banco (se existe, já deu consentimento antes)
+  // Verifica se já existe qualquer histórico no banco — qualquer tipo de conversa
+  // (inclui conversa_vendedor) — se existe, já deu consentimento antes
   try {
     const { data } = await supabase
       .from('conversas')
@@ -803,8 +816,22 @@ app.post('/webhook-vendedor', async (req, res) => {
 	console.log(`📱 [${vendedor}] ${de}: ${mensagem}`);
 
 	try {
-		await salvarMensagem(telefone, mensagem, de, vendedor, 'conversa_vendedor');
-		console.log(`✅ Conversa vendedor salva — ${vendedor} | ${de} | ${telefone}`);
+		// Verifica se esse número já tem histórico no bot
+		const { data: historicoBot } = await supabase
+			.from('conversas')
+			.select('id')
+			.eq('telefone', telefone)
+			.eq('de', 'bot')
+			.limit(1);
+
+		const passouPeloBot = historicoBot && historicoBot.length > 0;
+
+		// Se o vendedor iniciou a conversa (fromMe) e o número nunca passou pelo bot
+		// = lead que veio de fora (portal, indicação, etc.)
+		const tipo = (!passouPeloBot && body.fromMe) ? 'lead' : 'conversa_vendedor';
+
+		await salvarMensagem(telefone, mensagem, de, vendedor, tipo);
+		console.log(`✅ Conversa salva — ${vendedor} | ${de} | tipo: ${tipo} | ${telefone}`);
 	} catch (err) {
 		console.error('Erro ao salvar conversa vendedor:', err.message);
 	}
