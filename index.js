@@ -342,7 +342,7 @@ REGRAS INVIOLÁVEIS
 - NUNCA responda a perguntas fora do contexto da escola de idiomas (ex: receitas, conhecimentos gerais, programação, etc). Se a pergunta não tiver relação com a escola, responda educadamente que você é a assistente virtual da escola e retorne o foco para os cursos.
 - Para qualquer pergunta factual sobre a escola sem resposta no bloco INFORMAÇÕES VERIFICADAS, use SEMPRE: "Boa pergunta! O comercial vai te responder isso com precisão. Posso registrar seu interesse enquanto isso?"`;
 geminiModel = genAI.getGenerativeModel({
-        model: 'gemini-2.0-flash-lite',
+        model: 'gemini-3.1-flash-lite',
         systemInstruction: SYSTEM_PROMPT
 });
 
@@ -353,7 +353,7 @@ async function askGemini(telefone, mensagem, systemPromptFinal = SYSTEM_PROMPT) 
         })).slice(0, -1); // Remove a última mensagem que será enviada no sendMessage
 
         const model = genAI.getGenerativeModel({
-                model: 'gemini-2.0-flash-lite',
+                model: 'gemini-3.1-flash-lite',
                 systemInstruction: systemPromptFinal
         });
 
@@ -941,4 +941,15 @@ function checkInatividade() {
 
                         if (msg) {
                                 console.log(`⏳ Reengajamento disparado para ${telefone}`);
-                        
+                                sendWhatsApp(telefone, msg);
+                                reengajamentoEnviado[telefone] = true;
+                        }
+                }
+        }
+}
+
+// Roda a cada 30 minutos
+setInterval(checkInatividade, 30 * 60 * 1000);
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Escola Bot rodando na porta ${PORT}`));
