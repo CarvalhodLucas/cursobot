@@ -269,7 +269,7 @@ INDEFINIDO (ex: "oi", "bom dia", "tudo bem"):
 INFERÊNCIA DE CONTEXTO — PENSE ANTES DE PERGUNTAR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - "minha mãe quer que eu faça" / "meu pai mandou perguntar" → a pessoa é menor de idade. Pergunte apenas "Quantos anos você tem?" e infira a turma direto.
-- "vi o instagram" / "vi um anúncio" / "me indicaram" → é lead. Pule a pergunta aluno/lead.
+- "vi o instagram" / "vi um anúncio" / "me indicaram" / "tenho interesse" / "quero me matricular" / "meu filho" / "minha filha" → é lead. Pule a pergunta aluno/lead e NÃO pergunte "Você já é aluno?". Vá direto para responder a dúvida e seguir a qualificação.
 - Se o cliente mencionar "minha mensalidade", "minha aula" ou "meu professor", confirme: "Você já é nosso aluno? Se sim, vou te passar para a coordenação!"
 - NUNCA encaminhe para coordenação sem ter certeza que o cliente já é aluno. Na dúvida, continue como LEAD.
 - Se o cliente já informou a idade, calcule a turma sozinho. NÃO peça a faixa etária de novo.
@@ -683,6 +683,12 @@ function detectarTipo(mensagem, reply) {
         return 'desconhecido';
 }
 
+// Normaliza o telefone para o formato 5521... (remove @c.us e não dígitos)
+function normalizePhone(phone) {
+        if (!phone) return null;
+        return String(phone).split('@')[0].replace(/\D/g, '');
+}
+
 // Webhook
 app.post('/webhook', async (req, res) => {
         res.sendStatus(200);
@@ -690,8 +696,8 @@ app.post('/webhook', async (req, res) => {
         const body = req.body;
         if (body.fromMe || body.isGroup) return;
 
-        const telefone = body.phone;
-        const mensagem = body.text?.message;
+        const telefone = normalizePhone(body.phone);
+        const mensagem = body.text?.message || body.text || (typeof body.text === 'string' ? body.text : null);
         if (!telefone || !mensagem) return;
 
         // Atualiza status do último webhook recebido
@@ -722,11 +728,7 @@ app.post('/webhook', async (req, res) => {
 
         if (!jaConsentiu) {
                 // Primeira mensagem do número — envia aviso de LGPD
-                const msgLGPD = `Olá! Sou a assistente virtual da escola. 😊
-
-Este atendimento é automático e os dados desta conversa serão armazenados conforme a LGPD. Para remover seus dados, envie "REMOVER MEUS DADOS".
-
-Como posso te ajudar?`;
+                const msgLGPD = `Olá! Sou a assistente virtual da escola. 😊\n\nEste atendimento é automático e os dados desta conversa serão armazenados conforme a LGPD. Para remover seus dados, envie "REMOVER MEUS DADOS".`;
 
                 await sendWhatsApp(telefone, msgLGPD);
 
@@ -734,10 +736,14 @@ Como posso te ajudar?`;
                 if (!dadosLead[telefone]) dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false, consentimentoDado: false };
                 dadosLead[telefone].consentimentoDado = true; // Considera consentido ao continuar
 
-                // Salva a mensagem do cliente normalmente
-                await salvarMensagem(telefone, mensagem, 'cliente', vendedor, 'desconhecido');
+                // Salva apenas a mensagem LGPD no banco, a mensagem do cliente será salva no final junto com a resposta da IA
                 await salvarMensagem(telefone, msgLGPD, 'bot', vendedor, 'desconhecido');
-                return; // Para aqui — na próxima mensagem segue o fluxo normal
+                
+                // Adiciona a LGPD no histórico em RAM
+                if (!conversas[telefone]) conversas[telefone] = [];
+                conversas[telefone].push({ role: 'assistant', content: msgLGPD });
+                
+                // NÃO damos return; continua o fluxo para a IA responder à mensagem inicial
         }
         console.log(`📩 ${telefone}: ${mensagem} → vendedor: ${vendedor}`);
 
@@ -802,14 +808,19 @@ app.post('/webhook-vendedor', async (req, res) => {
 	const body = req.body;
 	if (body.isGroup) return;
 
-	const telefone = body.phone;
-	const mensagem = body.text?.message;
-	if (!telefone || !mensagem) return;
+        const telefone = normalizePhone(body.phone);
+        // Extração robusta da mensagem (Z-API pode variar dependendo se é OnReceive ou OnMessageSent)
+        const mensagem = body.text?.message || body.text || (typeof body.text === 'string' ? body.text : null) || body.message?.text;
+        
+        if (!telefone || !mensagem) {
+                console.log(`⚠️ Webhook vendedor ignorado: f=${telefone}, m=${!!mensagem}`);
+                return;
+        }
 
-	const vendedor = req.query.vendedor || 'desconhecido';
-	const de = body.fromMe ? 'vendedor' : 'cliente';
+        const vendedor = req.query.vendedor || 'desconhecido';
+        const de = (body.fromMe === true || body.fromMe === 'true') ? 'vendedor' : 'cliente';
 
-	console.log(`📱 [${vendedor}] ${de}: ${mensagem}`);
+        console.log(`📱 [${vendedor}] ${de}: ${mensagem} (${telefone})`);
 
 	try {
 		// Verifica se esse número já tem histórico no bot
