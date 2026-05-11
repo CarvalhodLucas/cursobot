@@ -850,9 +850,23 @@ app.post('/webhook-vendedor', async (req, res) => {
 
 		const passouPeloBot = historicoBot && historicoBot.length > 0;
 
-		// Se o vendedor iniciou a conversa (fromMe) e o número nunca passou pelo bot
-		// = lead que veio de fora (portal, indicação, etc.)
-		const tipo = (!passouPeloBot && body.fromMe) ? 'lead' : 'conversa_vendedor';
+		// Regras de tipo:
+		// 1. Vendedor iniciou conversa com número NOVO (veio de fora) → 'lead'
+		// 2. Qualquer outra situação → 'conversa_vendedor'
+		let tipo = 'conversa_vendedor';
+		if (body.fromMe && !passouPeloBot) {
+			// Verifica se já tem histórico no webhook-vendedor também
+			const { data: historicoVendedor } = await supabase
+				.from('conversas')
+				.select('id')
+				.eq('telefone', telefone)
+				.limit(1);
+			
+			// Só marca como lead se for a PRIMEIRA mensagem para esse número
+			if (!historicoVendedor || historicoVendedor.length === 0) {
+				tipo = 'lead';
+			}
+		}
 
 		await salvarMensagem(telefone, mensagem, de, vendedor, tipo);
 		console.log(`✅ Conversa salva — ${vendedor} | ${de} | tipo: ${tipo} | ${telefone}`);
