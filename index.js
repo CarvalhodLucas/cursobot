@@ -694,6 +694,22 @@ function detectarTipo(mensagem, reply) {
         return 'desconhecido';
 }
 
+// Extrai o conteúdo de qualquer tipo de mensagem do Z-API
+function extrairMensagem(body) {
+	if (body.text?.message) return body.text.message;
+	if (typeof body.text === 'string' && body.text) return body.text;
+	if (body.message?.text) return body.message.text;
+	if (body.image) return body.image.caption || '[imagem]';
+	if (body.audio) return '[áudio]';
+	if (body.video) return body.video.caption || '[vídeo]';
+	if (body.document) return `[documento: ${body.document.fileName || 'arquivo'}]`;
+	if (body.sticker) return '[figurinha]';
+	if (body.reaction) return `[reação: ${body.reaction.reactionMessage || ''}]`;
+	if (body.contact) return `[contato: ${body.contact.displayName || ''}]`;
+	if (body.location) return '[localização]';
+	return null;
+}
+
 // Normaliza o telefone para o formato 5521... (remove @c.us e não dígitos)
 function normalizePhone(phone) {
         if (!phone) return null;
@@ -826,9 +842,9 @@ app.post('/webhook-vendedor', async (req, res) => {
 	if (body.isGroup) return;
 
         const telefone = normalizePhone(body.phone);
-        // Extração robusta da mensagem (Z-API pode variar dependendo se é OnReceive ou OnMessageSent)
-        const mensagem = body.text?.message || body.text || (typeof body.text === 'string' ? body.text : null) || body.message?.text;
-        
+        // Extração robusta da mensagem (suporta texto, áudio, imagem, vídeo, sticker, etc.)
+        const mensagem = extrairMensagem(body);
+
         if (!telefone || !mensagem) {
                 console.log(`⚠️ Webhook vendedor ignorado: f=${telefone}, m=${!!mensagem}`);
                 return;
