@@ -862,9 +862,10 @@ app.post('/webhook-vendedor', async (req, res) => {
 				.eq('telefone', telefone)
 				.limit(1);
 			
-			// Só marca como lead se for a PRIMEIRA mensagem para esse número
+			// Só marca como lead-vendedor se for a PRIMEIRA mensagem para esse número
+			// Usa 'lead-vendedor' (não 'lead') para que o CRM não exiba na aba "Em atendimento"
 			if (!historicoVendedor || historicoVendedor.length === 0) {
-				tipo = 'lead';
+				tipo = 'lead-vendedor';
 			}
 		}
 
