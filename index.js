@@ -203,18 +203,29 @@ async function buscarRAG(mensagem) {
 	if (!data || !data.length) return [];
 
 	const seen = new Set();
-	return data.filter(item => {
-		if (!item.palavras_chave) return false;
-		const kwNorm = item.palavras_chave
-			.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-			.toLowerCase();
-		const match = palavras.some(p => kwNorm.includes(p));
-		if (match && !seen.has(item.categoria)) {
+
+	// Pontua cada item pelo número de palavras-chave que coincidem com a mensagem
+	const pontuados = data
+		.map(item => {
+			if (!item.palavras_chave) return null;
+			const kwNorm = item.palavras_chave
+				.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+				.toLowerCase();
+			const score = palavras.filter(p => kwNorm.includes(p)).length;
+			return score > 0 ? { item, score } : null;
+		})
+		.filter(Boolean)
+		.sort((a, b) => b.score - a.score); // ordena do mais relevante para o menos relevante
+
+	// Retorna o item mais relevante por categoria (subcategorias distintas,
+	// ex: horario_seg_qua ≠ horario_ter_qui, são retornadas separadamente)
+	return pontuados
+		.filter(({ item }) => {
+			if (seen.has(item.categoria)) return false;
 			seen.add(item.categoria);
 			return true;
-		}
-		return false;
-	});
+		})
+		.map(({ item }) => item);
 }
 
 
