@@ -710,10 +710,13 @@ function extrairMensagem(body) {
 	return null;
 }
 
-// Normaliza o telefone para o formato 5521... (remove @c.us e não dígitos)
+// Normaliza o telefone: remove @c.us, não-dígitos e garante prefixo 55 em números brasileiros
 function normalizePhone(phone) {
         if (!phone) return null;
-        return String(phone).split('@')[0].replace(/\D/g, '');
+        let num = String(phone).split('@')[0].replace(/\D/g, '');
+        // Números brasileiros sem código de país (10-11 dígitos) recebem prefixo 55
+        if (num.length === 10 || num.length === 11) num = '55' + num;
+        return num;
 }
 
 // Webhook
