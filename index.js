@@ -844,6 +844,17 @@ app.post('/webhook-vendedor', async (req, res) => {
 	const body = req.body;
 	if (body.isGroup) return;
 
+        // DEBUG TEMPORÁRIO — remove após diagnóstico
+        console.log('🔍 WEBHOOK-VENDEDOR BODY:', JSON.stringify({
+            phone: body.phone,
+            chatId: body.chatId,
+            connectedPhone: body.connectedPhone,
+            fromMe: body.fromMe,
+            type: body.type,
+            isGroup: body.isGroup,
+            keys: Object.keys(body)
+        }));
+
         const telefone = normalizePhone(body.phone);
         // Extração robusta da mensagem (suporta texto, áudio, imagem, vídeo, sticker, etc.)
         const mensagem = extrairMensagem(body);
