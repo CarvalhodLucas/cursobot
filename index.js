@@ -47,6 +47,9 @@ let geminiModel;
 // Memória de conversa por usuário
 const conversas = {};
 
+// Mapeamento LID → telefone real (WhatsApp LID privacy feature)
+const lidToPhone = new Map();
+
 // Dados dos leads extraídos e gerenciamento de inatividade
 const dadosLead = {};
 const ultimaAtividade = {};
@@ -844,12 +847,36 @@ app.post('/webhook-vendedor', async (req, res) => {
 	const body = req.body;
 	if (body.isGroup) return;
 
-        // DEBUG TEMPORÁRIO — remove após diagnóstico
-        console.log('🔍 WEBHOOK-VENDEDOR FULL:', JSON.stringify(body).substring(0, 1000));
-
-        const telefone = normalizePhone(body.phone);
         // Extração robusta da mensagem (suporta texto, áudio, imagem, vídeo, sticker, etc.)
         const mensagem = extrairMensagem(body);
+
+        // Resolve telefone: usa chatLid como chave consistente para mapear LID → número real
+        const rawPhone = body.phone || '';
+        const chatLid = body.chatLid ? body.chatLid.split('@')[0] : null;
+        const isLid = rawPhone.includes('@lid');
+
+        let telefone;
+        if (!isLid) {
+                // Recebido (fromMe=false): temos o número real do cliente
+                telefone = normalizePhone(rawPhone);
+                // Armazena mapeamento LID → telefone real (em memória e retroativo no banco)
+                if (chatLid && !lidToPhone.has(chatLid)) {
+                        lidToPhone.set(chatLid, telefone);
+                        console.log(`🔗 LID mapeado: ${chatLid} → ${telefone}`);
+                        // Atualiza registros antigos no banco que usavam o LID como telefone
+                        supabase.from('conversas')
+                                .update({ telefone: telefone })
+                                .eq('telefone', chatLid)
+                                .then(({ error, count }) => {
+                                        if (!error) console.log(`✅ DB retroativo: ${chatLid} → ${telefone}`);
+                                });
+                }
+        } else {
+                // Enviado (fromMe=true): Z-API usa LID — tenta resolver pelo cache
+                const lid = rawPhone.split('@')[0];
+                const realPhone = lidToPhone.get(lid) || (chatLid ? lidToPhone.get(chatLid) : null);
+                telefone = realPhone || lid; // fallback: usa o LID como identificador
+        }
 
         if (!telefone || !mensagem) {
                 console.log(`⚠️ Webhook vendedor ignorado: f=${telefone}, m=${!!mensagem}`);
