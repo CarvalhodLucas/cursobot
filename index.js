@@ -95,7 +95,7 @@ async function getVendedor() {
 
         // 1. Domingo — Fallback
         if (dia === 0) {
-                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebeca' : 'Paulo';
+                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebecca' : 'Paulo';
                 return ultimoVendedorFallback;
         }
 
@@ -119,14 +119,14 @@ async function getVendedor() {
         });
 
         if (!match) {
-                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebeca' : 'Paulo';
+                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebecca' : 'Paulo';
                 console.log(`⚠️ Nenhum vendedor escalado para dia ${dia} às ${hora.toFixed(2)}h. Usando fallback: ${ultimoVendedorFallback}`);
                 return ultimoVendedorFallback;
         }
 
         // 3. Rodízio
         if (match.vendedor === 'rodizio' || match.tipo === 'rodizio') {
-                ultimoVendedorTarde = ultimoVendedorTarde === 'Paulo' ? 'Rebeca' : 'Paulo';
+                ultimoVendedorTarde = ultimoVendedorTarde === 'Paulo' ? 'Rebecca' : 'Paulo';
                 return ultimoVendedorTarde;
         }
 
@@ -520,10 +520,9 @@ async function notificarVendedor(telefone, vendedor) {
         if (!dados || !dados.confirmado) return;
 
         // Pega o número do vendedor pela variável de ambiente
-        // Normaliza o nome para comparação (aceita "Rebeca" e "Rebecca")
-        const nomeVendedor = (vendedor || '').toLowerCase().replace(/^rebec+a$/, 'rebeca');
-        const numeroVendedor = nomeVendedor === 'rebeca'
-                ? process.env.NUMERO_REBECA
+        const nomeVendedor = (vendedor || '').toLowerCase();
+        const numeroVendedor = nomeVendedor === 'rebecca'
+                ? process.env.NUMERO_REBECCA
                 : process.env.NUMERO_PAULO;
 
         if (!numeroVendedor) {
