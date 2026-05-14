@@ -520,7 +520,9 @@ async function notificarVendedor(telefone, vendedor) {
         if (!dados || !dados.confirmado) return;
 
         // Pega o número do vendedor pela variável de ambiente
-        const numeroVendedor = vendedor === 'Rebeca'
+        // Normaliza o nome para comparação (aceita "Rebeca" e "Rebecca")
+        const nomeVendedor = (vendedor || '').toLowerCase().replace(/^rebec+a$/, 'rebeca');
+        const numeroVendedor = nomeVendedor === 'rebeca'
                 ? process.env.NUMERO_REBECA
                 : process.env.NUMERO_PAULO;
 
