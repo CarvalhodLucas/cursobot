@@ -782,8 +782,10 @@ app.post('/webhook', async (req, res) => {
         console.log(`📩 ${telefone}: ${mensagem} → vendedor: ${vendedor}`);
 
         try {
-                // Atualiza inatividade e reengajamento
+                // Atualiza inatividade — reseta reengajamento APENAS se ainda não foi encerrado
                 ultimaAtividade[telefone] = Date.now();
+                // Não reseta se já foi marcado como encerrado pelo checkInatividade
+                // (permite reengajamento se o cliente voltar a interagir após ficar inativo)
                 reengajamentoEnviado[telefone] = false;
 
                 const reply = await askAI(telefone, mensagem);
@@ -1000,32 +1002,23 @@ app.get('/reset-all', (req, res) => {
 });
 
 // Reengajamento após 24h de inatividade
-function checkInatividade() {
+async function checkInatividade() {
         const agora = Date.now();
         for (const telefone in ultimaAtividade) {
                 if (agora - ultimaAtividade[telefone] > 24 * 60 * 60 * 1000 && !reengajamentoEnviado[telefone]) {
-                        const dados = dadosLead[telefone] || {};
-                        let msg = '';
+                        // Consulta o banco para ver se essa conversa já foi encerrada/encaminhada
+                        // Não reenvia reengajamento para: alunos, leads confirmados, ou quem já recebeu reengajamento recente
+                        try {
+                                const { data: historico } = await supabase
+                                        .from('conversas')
+                                        .select('tipo, created_at')
+                                        .eq('telefone', telefone)
+                                        .order('created_at', { ascending: false })
+                                        .limit(20);
 
-                        if (!dados.nome) {
-                                msg = "Olá! 😊 Ainda posso te ajudar com informações sobre nossos cursos? É só responder aqui!";
-                        } else if (dados.nome && (!dados.turma || !dados.horario)) {
-                                msg = `Oi, ${dados.nome}! Tudo bem? Ainda estou aqui caso queira continuar conhecendo nossos cursos. 😊`;
-                        } else if (dados.nome && dados.turma && dados.horario && !dados.confirmado) {
-                                msg = `Oi, ${dados.nome}! Enviei os seus dados para confirmar, mas ainda não recebi resposta. Gostaria de prosseguir com o cadastro?`;
-                        }
-
-                        if (msg) {
-                                console.log(`⏳ Reengajamento disparado para ${telefone}`);
-                                sendWhatsApp(telefone, msg);
-                                reengajamentoEnviado[telefone] = true;
-                        }
-                }
-        }
-}
-
-// Roda a cada 30 minutos
-setInterval(checkInatividade, 30 * 60 * 1000);
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Escola Bot rodando na porta ${PORT}`));
+                                if (historico && historico.length > 0) {
+                                        const tipos = historico.map(r => r.tipo);
+                                        // Não envia reengajamento se a conversa já foi encerrada
+                                        const jaEncerrado = tipos.some(t =>
+                                                t === 'aluno' ||
+                               
