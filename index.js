@@ -850,6 +850,9 @@ app.post('/webhook-vendedor', async (req, res) => {
 	const body = req.body;
 	if (body.isGroup) return;
 
+        // LOG de diagnóstico — mostra o payload raw para depurar mensagens de vendedor
+        console.log(`📥 webhook-vendedor [${req.query.vendedor||'?'}] fromMe=${body.fromMe} phone=${body.phone} chatLid=${body.chatLid} keys=${Object.keys(body).join(',')}`);
+
         // Extração robusta da mensagem (suporta texto, áudio, imagem, vídeo, sticker, etc.)
         const mensagem = extrairMensagem(body);
 
@@ -1021,4 +1024,42 @@ async function checkInatividade() {
                                         // Não envia reengajamento se a conversa já foi encerrada
                                         const jaEncerrado = tipos.some(t =>
                                                 t === 'aluno' ||
-                               
+                                                t === 'lead_confirmado' ||
+                                                t === 'lead-vendedor' ||
+                                                t === 'conversa_vendedor'
+                                        );
+                                        if (jaEncerrado) {
+                                                reengajamentoEnviado[telefone] = true; // marca para não checar de novo
+                                                console.log(`⏭️  Reengajamento pulado para ${telefone} (conversa já encerrada: ${tipos.find(t => ['aluno','lead_confirmado','lead-vendedor','conversa_vendedor'].includes(t))})`);
+                                                continue;
+                                        }
+                                }
+                        } catch (e) {
+                                console.error('Erro ao checar histórico para reengajamento:', e.message);
+                        }
+
+                        const dados = dadosLead[telefone] || {};
+                        let msg = '';
+
+                        if (!dados.nome) {
+                                msg = "Olá! 😊 Ainda posso te ajudar com informações sobre nossos cursos? É só responder aqui!";
+                        } else if (dados.nome && (!dados.turma || !dados.horario)) {
+                                msg = `Oi, ${dados.nome}! Tudo bem? Ainda estou aqui caso queira continuar conhecendo nossos cursos. 😊`;
+                        } else if (dados.nome && dados.turma && dados.horario && !dados.confirmado) {
+                                msg = `Oi, ${dados.nome}! Enviei os seus dados para confirmar, mas ainda não recebi resposta. Gostaria de prosseguir com o cadastro?`;
+                        }
+
+                        if (msg) {
+                                console.log(`⏳ Reengajamento disparado para ${telefone}`);
+                                sendWhatsApp(telefone, msg);
+                                reengajamentoEnviado[telefone] = true;
+                        }
+                }
+        }
+}
+
+// Roda a cada 30 minutos
+setInterval(checkInatividade, 30 * 60 * 1000);
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Escola Bot rodando na porta ${PORT}`));
