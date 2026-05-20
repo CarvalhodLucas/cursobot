@@ -574,12 +574,12 @@ async function salvarMensagem(telefone, mensagem, de, vendedor, tipo = 'desconhe
                         created_at: new Date().toISOString()
                 });
                 if (error) {
-                        console.error('❌ Erro Supabase:', JSON.stringify(error));
+                        console.error(`❌ Supabase insert falhou [${telefone}] de=${de} tipo=${tipo}: ${JSON.stringify(error)}`);
                 } else {
-                        console.log('✅ Salvo no Supabase!');
+                        console.log(`✅ Salvo [${telefone}] de=${de} tipo=${tipo}`);
                 }
         } catch (err) {
-                console.error('❌ Erro ao salvar:', err.message);
+                console.error(`❌ Erro ao salvar [${telefone}]: ${err.message}`);
         }
 }
 
@@ -1005,6 +1005,24 @@ app.get('/reset-all', (req, res) => {
         res.send('Toda memória resetada ✅');
 });
 
+// Rota de diagnóstico — busca registros de um número no banco
+app.get('/buscar/:telefone', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+        const frag = req.params.telefone.replace(/\D/g, '');
+        try {
+                const { data, error } = await supabase
+                        .from('conversas')
+                        .select('id, telefone, mensagem, de, vendedor, tipo, created_at')
+                        .ilike('telefone', `%${frag}%`)
+                        .order('created_at', { ascending: false })
+                        .limit(50);
+                if (error) return res.status(500).json({ error: error.message });
+                res.json({ total: data.length, registros: data });
+        } catch (err) {
+                res.status(500).json({ error: err.message });
+        }
+});
+
 // Reengajamento após 24h de inatividade
 async function checkInatividade() {
         const agora = Date.now();
@@ -1043,24 +1061,4 @@ async function checkInatividade() {
                         let msg = '';
 
                         if (!dados.nome) {
-                                msg = "Olá! 😊 Ainda posso te ajudar com informações sobre nossos cursos? É só responder aqui!";
-                        } else if (dados.nome && (!dados.turma || !dados.horario)) {
-                                msg = `Oi, ${dados.nome}! Tudo bem? Ainda estou aqui caso queira continuar conhecendo nossos cursos. 😊`;
-                        } else if (dados.nome && dados.turma && dados.horario && !dados.confirmado) {
-                                msg = `Oi, ${dados.nome}! Enviei os seus dados para confirmar, mas ainda não recebi resposta. Gostaria de prosseguir com o cadastro?`;
-                        }
-
-                        if (msg) {
-                                console.log(`⏳ Reengajamento disparado para ${telefone}`);
-                                sendWhatsApp(telefone, msg);
-                                reengajamentoEnviado[telefone] = true;
-                        }
-                }
-        }
-}
-
-// Roda a cada 30 minutos
-setInterval(checkInatividade, 30 * 60 * 1000);
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Escola Bot rodando na porta ${PORT}`));
+                                msg = "Olá! 😊 Ainda posso te ajudar com informações sobre nossos cursos? É só responde
