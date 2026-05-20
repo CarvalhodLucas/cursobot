@@ -826,9 +826,10 @@ app.post('/webhook', async (req, res) => {
                 // Prioridade: Enviar o WhatsApp primeiro
                 await sendWhatsApp(telefone, reply);
 
-                // Salvar em segundo plano (sem travar a resposta)
-                salvarMensagem(telefone, mensagem, 'cliente', vendedor, tipo);
-                salvarMensagem(telefone, reply, 'bot', vendedor, tipo);
+                // Salva cliente ANTES do bot, com timestamps sequenciais garantidos
+                // (evita inversão de ordem no CRM quando os dois têm o mesmo segundo)
+                await salvarMensagem(telefone, mensagem, 'cliente', vendedor, tipo);
+                await salvarMensagem(telefone, reply, 'bot', vendedor, tipo);
         } catch (err) {
                 console.error('Erro:', err.response?.data || err.message);
                 // Salva a mensagem do cliente mesmo que a IA tenha falhado
