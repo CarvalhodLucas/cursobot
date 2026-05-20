@@ -1061,4 +1061,24 @@ async function checkInatividade() {
                         let msg = '';
 
                         if (!dados.nome) {
-                                msg = "Olá! 😊 Ainda posso te ajudar com informações sobre nossos cursos? É só responde
+                                msg = "Olá! 😊 Ainda posso te ajudar com informações sobre nossos cursos? É só responder aqui!";
+                        } else if (dados.nome && (!dados.turma || !dados.horario)) {
+                                msg = `Oi, ${dados.nome}! Tudo bem? Ainda estou aqui caso queira continuar conhecendo nossos cursos. 😊`;
+                        } else if (dados.nome && dados.turma && dados.horario && !dados.confirmado) {
+                                msg = `Oi, ${dados.nome}! Enviei os seus dados para confirmar, mas ainda não recebi resposta. Gostaria de prosseguir com o cadastro?`;
+                        }
+
+                        if (msg) {
+                                console.log(`⏳ Reengajamento disparado para ${telefone}`);
+                                sendWhatsApp(telefone, msg);
+                                reengajamentoEnviado[telefone] = true;
+                        }
+                }
+        }
+}
+
+// Roda a cada 30 minutos
+setInterval(checkInatividade, 30 * 60 * 1000);
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Escola Bot rodando na porta ${PORT}`));
