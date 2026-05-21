@@ -940,6 +940,7 @@ app.get('/', (req, res) => res.send('Escola Bot rodando ✅'));
 
 // Rota de simulação para o CRM — usa o mesmo Groq/Gemini do bot
 app.post('/simulate', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
         const { mensagem } = req.body;
         if (!mensagem) return res.status(400).json({ error: 'mensagem is required' });
 
@@ -969,6 +970,7 @@ app.post('/simulate', async (req, res) => {
 
 // Rota de status para o CRM
 app.get('/status', (req, res) => {
+        if (!checkAdminToken(req, res)) return;
         res.json({
                 modelo: botStatus.modelo,
                 fallbacksHoje: botStatus.fallbacksHoje,
