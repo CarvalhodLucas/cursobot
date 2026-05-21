@@ -787,6 +787,7 @@ app.post('/webhook', async (req, res) => {
                 // Não reseta se já foi marcado como encerrado pelo checkInatividade
                 // (permite reengajamento se o cliente voltar a interagir após ficar inativo)
                 reengajamentoEnviado[telefone] = false;
+                salvarEstadoBot(telefone);
 
                 const reply = await askAI(telefone, mensagem);
                 let tipo = detectarTipo(mensagem, reply);
@@ -811,11 +812,13 @@ app.post('/webhook', async (req, res) => {
 
                 if (reply.includes('Seus dados foram registrados')) {
                         dadosLead[telefone].confirmado = true;
+                        salvarEstadoBot(telefone);
                 }
 
                 if (dadosLead[telefone].confirmado && !dadosLead[telefone].notificado) {
                         tipo = 'lead_confirmado';
                         dadosLead[telefone].notificado = true;
+                        salvarEstadoBot(telefone);
                         await notificarVendedor(telefone, vendedor);
                 } else if (dadosLead[telefone].confirmado) {
                         tipo = 'lead_confirmado';
@@ -1023,6 +1026,57 @@ app.get('/buscar/:telefone', async (req, res) => {
         }
 });
 
+// ── Persistência de estado no Supabase ─────────────────────────────────────
+// Carrega estado salvo no startup para resistir a redeploys do Railway
+async function carregarEstadoBot() {
+        try {
+                const { data, error } = await supabase
+                        .from('estado_bot')
+                        .select('telefone, ultima_atividade, reengajamento_env, confirmado, notificado');
+                if (error) throw error;
+                if (!data || data.length === 0) {
+                        console.log('📦 estado_bot: nenhum registro ainda');
+                        return;
+                }
+                data.forEach(r => {
+                        if (r.ultima_atividade) {
+                                ultimaAtividade[r.telefone] = new Date(r.ultima_atividade).getTime();
+                        }
+                        if (r.reengajamento_env) {
+                                reengajamentoEnviado[r.telefone] = true;
+                        }
+                        if (r.confirmado || r.notificado) {
+                                if (!dadosLead[r.telefone]) {
+                                        dadosLead[r.telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false, consentimentoDado: true };
+                                }
+                                dadosLead[r.telefone].confirmado = r.confirmado;
+                                dadosLead[r.telefone].notificado  = r.notificado;
+                        }
+                });
+                console.log(`📦 Estado restaurado para ${data.length} telefone(s)`);
+        } catch (err) {
+                console.error('❌ Erro ao carregar estado_bot:', err.message);
+        }
+}
+
+// Persiste estado de um telefone no Supabase (fire-and-forget, não bloqueia o fluxo)
+function salvarEstadoBot(telefone) {
+        const ultima = ultimaAtividade[telefone]
+                ? new Date(ultimaAtividade[telefone]).toISOString()
+                : null;
+        supabase.from('estado_bot').upsert({
+                telefone,
+                ultima_atividade:  ultima,
+                reengajamento_env: !!reengajamentoEnviado[telefone],
+                confirmado:        !!(dadosLead[telefone]?.confirmado),
+                notificado:        !!(dadosLead[telefone]?.notificado),
+                updated_at:        new Date().toISOString()
+        }, { onConflict: 'telefone' }).then(({ error }) => {
+                if (error) console.error(`❌ Erro ao salvar estado_bot [${telefone}]:`, error.message);
+        });
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 // Reengajamento após 24h de inatividade
 async function checkInatividade() {
         const agora = Date.now();
@@ -1049,6 +1103,7 @@ async function checkInatividade() {
                                         );
                                         if (jaEncerrado) {
                                                 reengajamentoEnviado[telefone] = true; // marca para não checar de novo
+                                                salvarEstadoBot(telefone);
                                                 console.log(`⏭️  Reengajamento pulado para ${telefone} (conversa já encerrada: ${tipos.find(t => ['aluno','lead_confirmado','lead-vendedor','conversa_vendedor'].includes(t))})`);
                                                 continue;
                                         }
@@ -1072,6 +1127,7 @@ async function checkInatividade() {
                                 console.log(`⏳ Reengajamento disparado para ${telefone}`);
                                 sendWhatsApp(telefone, msg);
                                 reengajamentoEnviado[telefone] = true;
+                                salvarEstadoBot(telefone);
                         }
                 }
         }
@@ -1081,4 +1137,8 @@ async function checkInatividade() {
 setInterval(checkInatividade, 30 * 60 * 1000);
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Escola Bot rodando na porta ${PORT}`));
+app.listen(PORT, () => {
+        console.log(`🚀 Escola Bot rodando na porta ${PORT}`);
+        // Restaura estado persistido (inatividade, reengajamento, confirmações)
+        carregarEstadoBot();
+});
