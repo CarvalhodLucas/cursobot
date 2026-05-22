@@ -1244,6 +1244,76 @@ function agendarResumoDiario() {
 }
 // ────────────────────────────────────────────────────────────────────────────
 
+// ── Alerta de leads sem status para vendedores ───────────────────────────────
+async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
+        if (!numeroVendedor) return;
+
+        try {
+                const limite48h = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+
+                // Leads do vendedor com último contato há mais de 48h
+                const { data: leads } = await supabase
+                        .from('leads_resumo')
+                        .select('telefone, vendedor')
+                        .ilike('vendedor', nomeVendedor)
+                        .eq('tem_msg_cliente', true)
+                        .lte('ultimo_contato', limite48h);
+
+                if (!leads || leads.length === 0) {
+                        console.log(`✅ ${nomeVendedor}: nenhum lead pendente`);
+                        return;
+                }
+
+                // Filtra os que já têm status definido
+                const telefones = leads.map(l => l.telefone);
+                const { data: comStatus } = await supabase
+                        .from('status_de_leads')
+                        .select('telefone, status, nome')
+                        .in('telefone', telefones);
+
+                const statusMap = {};
+                (comStatus || []).forEach(s => { statusMap[s.telefone] = s; });
+
+                const semStatus = leads.filter(l => !statusMap[l.telefone]?.status);
+
+                if (semStatus.length === 0) {
+                        console.log(`✅ ${nomeVendedor}: todos os leads têm status`);
+                        return;
+                }
+
+                // Monta mensagem
+                let msg = `Oi, ${nomeVendedor}! 👋 Você tem *${semStatus.length} lead(s)* sem status há mais de 48h:\n\n`;
+                semStatus.forEach(l => {
+                        const info = statusMap[l.telefone];
+                        const nome = info?.nome ? info.nome : 'sem nome';
+                        msg += `• ${nome} — ${l.telefone}\n`;
+                });
+                msg += `\nAtualiza o status no CRM quando puder 😊`;
+
+                await sendWhatsApp(numeroVendedor, msg);
+                console.log(`🔔 Alerta enviado para ${nomeVendedor}: ${semStatus.length} lead(s) pendente(s)`);
+        } catch (err) {
+                console.error(`❌ Erro ao enviar alerta para ${nomeVendedor}:`, err.message);
+        }
+}
+
+// Agenda alerta para um vendedor num horário UTC específico
+function agendarAlertaVendedor(nomeVendedor, numeroVendedor, horaUTC) {
+        const agora = new Date();
+        const proxima = new Date(agora);
+        proxima.setUTCHours(horaUTC, 0, 0, 0);
+        if (proxima <= agora) proxima.setUTCDate(proxima.getUTCDate() + 1);
+
+        const msAteProxima = proxima - agora;
+        console.log(`⏰ Alerta ${nomeVendedor} agendado em ${Math.round(msAteProxima / 60000)} minutos`);
+
+        setTimeout(() => {
+                enviarAlertaVendedor(nomeVendedor, numeroVendedor);
+                setInterval(() => enviarAlertaVendedor(nomeVendedor, numeroVendedor), 24 * 60 * 60 * 1000);
+        }, msAteProxima);
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
         console.log(`🚀 Escola Bot rodando na porta ${PORT}`);
@@ -1251,4 +1321,7 @@ app.listen(PORT, () => {
         carregarEstadoBot();
         // Agenda resumo diário às 8h BRT
         agendarResumoDiario();
+        // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
+        agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 15);
+        agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
 });
