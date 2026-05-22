@@ -40,6 +40,7 @@ const ZAPI_INSTANCE = process.env.ZAPI_INSTANCE;
 const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 const ZAPI_CLIENT_TOKEN = process.env.ZAPI_CLIENT_TOKEN;
 const NUMERO_COORDENACAO = process.env.NUMERO_COORDENACAO;
+const NUMERO_GERENTE = process.env.NUMERO_GERENTE;
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 let geminiModel;
@@ -1138,9 +1139,116 @@ async function checkInatividade() {
 // Roda a cada 30 minutos
 setInterval(checkInatividade, 30 * 60 * 1000);
 
+// ── Resumo diário para a gerente ────────────────────────────────────────────
+async function enviarResumoDiario() {
+        if (!NUMERO_GERENTE) return;
+
+        try {
+                // Ontem: 00:00:00 até 23:59:59 no horário de Brasília
+                const agora = new Date();
+                const ontemInicio = new Date(agora);
+                ontemInicio.setDate(ontemInicio.getDate() - 1);
+                ontemInicio.setHours(3, 0, 0, 0); // 00:00 BRT = 03:00 UTC
+
+                const ontemFim = new Date(agora);
+                ontemFim.setDate(ontemFim.getDate() - 1);
+                ontemFim.setHours(26, 59, 59, 999); // 23:59 BRT = 02:59 UTC do dia seguinte
+
+                const inicioISO = ontemInicio.toISOString();
+                const fimISO   = ontemFim.toISOString();
+
+                // Leads novos do dia (primeiro contato dentro do período)
+                const { data: leadsNovos } = await supabase
+                        .from('leads_resumo')
+                        .select('telefone, vendedor, primeiro_contato')
+                        .gte('primeiro_contato', inicioISO)
+                        .lte('primeiro_contato', fimISO)
+                        .eq('tem_msg_cliente', true);
+
+                // Matriculados do dia (status atualizado ontem)
+                const { data: matriculados } = await supabase
+                        .from('status_de_leads')
+                        .select('telefone, status')
+                        .eq('status', 'matriculado');
+
+                const totalLeads      = leadsNovos?.length || 0;
+                const totalMatriculados = matriculados?.length || 0;
+
+                // Agrupa leads novos por vendedor
+                const porVendedor = {};
+                (leadsNovos || []).forEach(l => {
+                        const v = l.vendedor || 'desconhecido';
+                        if (!porVendedor[v]) porVendedor[v] = { total: 0, semStatus: 0 };
+                        porVendedor[v].total++;
+                });
+
+                // Verifica quais leads novos não têm status definido
+                const telefonesNovos = (leadsNovos || []).map(l => l.telefone);
+                if (telefonesNovos.length > 0) {
+                        const { data: statusExistentes } = await supabase
+                                .from('status_de_leads')
+                                .select('telefone, status')
+                                .in('telefone', telefonesNovos);
+
+                        const comStatus = new Set((statusExistentes || []).map(s => s.telefone));
+                        (leadsNovos || []).forEach(l => {
+                                const v = l.vendedor || 'desconhecido';
+                                if (!comStatus.has(l.telefone)) {
+                                        porVendedor[v].semStatus++;
+                                }
+                        });
+                }
+
+                // Monta a mensagem
+                const data = ontemInicio.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric' });
+                let msg = `📊 *Resumo do dia ${data}*\n\n`;
+                msg += `👥 Leads novos: *${totalLeads}*\n`;
+                msg += `🎓 Matriculados: *${totalMatriculados}*\n\n`;
+
+                if (Object.keys(porVendedor).length > 0) {
+                        msg += `📋 *Por vendedor:*\n`;
+                        for (const [vendedor, dados] of Object.entries(porVendedor)) {
+                                msg += `• ${vendedor}: ${dados.total} lead(s)`;
+                                if (dados.semStatus > 0) {
+                                        msg += ` _(${dados.semStatus} sem status)_`;
+                                }
+                                msg += '\n';
+                        }
+                } else {
+                        msg += `_Nenhum lead novo ontem._`;
+                }
+
+                await sendWhatsApp(NUMERO_GERENTE, msg);
+                console.log(`📊 Resumo diário enviado para a gerente`);
+        } catch (err) {
+                console.error('❌ Erro ao enviar resumo diário:', err.message);
+        }
+}
+
+// Agenda o resumo diário às 8h horário de Brasília (11:00 UTC)
+function agendarResumoDiario() {
+        const agora = new Date();
+        // Próximas 11:00 UTC (= 08:00 BRT)
+        const proxima = new Date(agora);
+        proxima.setUTCHours(11, 0, 0, 0);
+        if (proxima <= agora) proxima.setUTCDate(proxima.getUTCDate() + 1);
+
+        const msAteProxima = proxima - agora;
+        console.log(`⏰ Resumo diário agendado em ${Math.round(msAteProxima / 60000)} minutos`);
+
+        setTimeout(() => {
+                enviarResumoDiario();
+                // Depois da primeira execução, repete a cada 24h
+                setInterval(enviarResumoDiario, 24 * 60 * 60 * 1000);
+        }, msAteProxima);
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
         console.log(`🚀 Escola Bot rodando na porta ${PORT}`);
         // Restaura estado persistido (inatividade, reengajamento, confirmações)
         carregarEstadoBot();
+        // Agenda resumo diário às 8h BRT
+        agendarResumoDiario();
 });
