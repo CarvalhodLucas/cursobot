@@ -1244,6 +1244,38 @@ function agendarResumoDiario() {
 }
 // ────────────────────────────────────────────────────────────────────────────
 
+// ── Lembrete semanal de escala para a gerente ────────────────────────────────
+function agendarLembreteEscala() {
+        if (!NUMERO_GERENTE) return;
+
+        function msAteProximaSexta22UTC() {
+                const agora = new Date();
+                const proxima = new Date(agora);
+                // Avança até a próxima sexta (dia 5)
+                const diasAteSexta = (5 - proxima.getUTCDay() + 7) % 7 || 7;
+                proxima.setUTCDate(proxima.getUTCDate() + diasAteSexta);
+                proxima.setUTCHours(22, 0, 0, 0); // 19h BRT = 22h UTC
+                // Se já passou essa sexta, pega a próxima
+                if (proxima <= agora) proxima.setUTCDate(proxima.getUTCDate() + 7);
+                return proxima - agora;
+        }
+
+        function agendar() {
+                const ms = msAteProximaSexta22UTC();
+                console.log(`⏰ Lembrete de escala agendado em ${Math.round(ms / 60000)} minutos`);
+                setTimeout(() => {
+                        sendWhatsApp(NUMERO_GERENTE,
+                                `Oi, Leybian! 👋 Lembrete: não esquece de atualizar a *escala de sábado* no CRM 😊`
+                        );
+                        console.log(`🔔 Lembrete de escala enviado para a gerente`);
+                        agendar(); // reagenda para a próxima sexta
+                }, ms);
+        }
+
+        agendar();
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 // ── Alerta de leads sem status para vendedores ───────────────────────────────
 async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
         if (!numeroVendedor) return;
@@ -1324,4 +1356,6 @@ app.listen(PORT, () => {
         // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
         agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 15);
         agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
+        // Lembrete semanal de escala às sextas 19h BRT (22h UTC)
+        agendarLembreteEscala();
 });
