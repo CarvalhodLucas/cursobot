@@ -1144,78 +1144,104 @@ async function enviarResumoDiario() {
         if (!NUMERO_GERENTE) return;
 
         try {
-                // Ontem: 00:00:00 até 23:59:59 no horário de Brasília
+                // Ontem 00:00 BRT (03:00 UTC) até 23:59 BRT (02:59 UTC do dia seguinte)
                 const agora = new Date();
                 const ontemInicio = new Date(agora);
-                ontemInicio.setDate(ontemInicio.getDate() - 1);
-                ontemInicio.setHours(3, 0, 0, 0); // 00:00 BRT = 03:00 UTC
-
-                const ontemFim = new Date(agora);
-                ontemFim.setDate(ontemFim.getDate() - 1);
-                ontemFim.setHours(26, 59, 59, 999); // 23:59 BRT = 02:59 UTC do dia seguinte
+                ontemInicio.setUTCDate(ontemInicio.getUTCDate() - 1);
+                ontemInicio.setUTCHours(3, 0, 0, 0);
+                const ontemFim = new Date(ontemInicio);
+                ontemFim.setUTCHours(26, 59, 59, 999);
 
                 const inicioISO = ontemInicio.toISOString();
                 const fimISO   = ontemFim.toISOString();
 
-                // Leads novos do dia (primeiro contato dentro do período)
+                // Leads novos ontem (primeiro contato dentro do período)
                 const { data: leadsNovos } = await supabase
                         .from('leads_resumo')
-                        .select('telefone, vendedor, primeiro_contato')
+                        .select('telefone, vendedor, tem_msg_bot')
                         .gte('primeiro_contato', inicioISO)
                         .lte('primeiro_contato', fimISO)
                         .eq('tem_msg_cliente', true);
 
-                // Matriculados do dia (status atualizado ontem)
-                const { data: matriculados } = await supabase
+                // Todos os status cadastrados (visão geral)
+                const { data: todosStatus } = await supabase
                         .from('status_de_leads')
-                        .select('telefone, status')
-                        .eq('status', 'matriculado');
+                        .select('telefone, status, nome, updated_at');
 
-                const totalLeads      = leadsNovos?.length || 0;
-                const totalMatriculados = matriculados?.length || 0;
+                // Todos os leads existentes para calcular sem status
+                const { data: todosLeads } = await supabase
+                        .from('leads_resumo')
+                        .select('telefone, vendedor')
+                        .eq('tem_msg_cliente', true);
 
-                // Agrupa leads novos por vendedor
+                const totalLeadsNovos = leadsNovos?.length || 0;
+                const viaBot      = (leadsNovos || []).filter(l => l.tem_msg_bot).length;
+                const viaVendedor = totalLeadsNovos - viaBot;
+
+                // Contagem por status (geral)
+                const contStatus = { novo: 0, em_andamento: 0, matriculado: 0, perdido: 0 };
+                (todosStatus || []).forEach(s => {
+                        if (contStatus[s.status] !== undefined) contStatus[s.status]++;
+                });
+                const comStatusSet = new Set((todosStatus || []).map(s => s.telefone));
+                const totalSemStatus = (todosLeads || []).filter(l => !comStatusSet.has(l.telefone)).length;
+
+                // Status alterados ontem
+                const statusAlteradosOntem = (todosStatus || []).filter(s =>
+                        s.updated_at && s.updated_at >= inicioISO && s.updated_at <= fimISO
+                );
+                const alteradosPorStatus = { novo: [], em_andamento: [], matriculado: [], perdido: [] };
+                statusAlteradosOntem.forEach(s => {
+                        if (alteradosPorStatus[s.status]) {
+                                alteradosPorStatus[s.status].push(s.nome || s.telefone);
+                        }
+                });
+
+                // Por vendedor (leads novos de ontem)
                 const porVendedor = {};
                 (leadsNovos || []).forEach(l => {
                         const v = l.vendedor || 'desconhecido';
                         if (!porVendedor[v]) porVendedor[v] = { total: 0, semStatus: 0 };
                         porVendedor[v].total++;
+                        if (!comStatusSet.has(l.telefone)) porVendedor[v].semStatus++;
                 });
 
-                // Verifica quais leads novos não têm status definido
-                const telefonesNovos = (leadsNovos || []).map(l => l.telefone);
-                if (telefonesNovos.length > 0) {
-                        const { data: statusExistentes } = await supabase
-                                .from('status_de_leads')
-                                .select('telefone, status')
-                                .in('telefone', telefonesNovos);
+                // Monta mensagem
+                const dataStr = ontemInicio.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric' });
+                let msg = `📊 *Resumo do dia ${dataStr}*\n\n`;
 
-                        const comStatus = new Set((statusExistentes || []).map(s => s.telefone));
-                        (leadsNovos || []).forEach(l => {
-                                const v = l.vendedor || 'desconhecido';
-                                if (!comStatus.has(l.telefone)) {
-                                        porVendedor[v].semStatus++;
-                                }
-                        });
-                }
+                msg += `👥 *Leads novos: ${totalLeadsNovos}*\n`;
+                msg += `  🤖 Via bot: ${viaBot}\n`;
+                msg += `  🧑 Via vendedor: ${viaVendedor}\n\n`;
 
-                // Monta a mensagem
-                const data = ontemInicio.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric' });
-                let msg = `📊 *Resumo do dia ${data}*\n\n`;
-                msg += `👥 Leads novos: *${totalLeads}*\n`;
-                msg += `🎓 Matriculados: *${totalMatriculados}*\n\n`;
+                msg += `📋 *Status geral dos leads:*\n`;
+                msg += `  • Novo: ${contStatus.novo}\n`;
+                msg += `  • Em andamento: ${contStatus.em_andamento}\n`;
+                msg += `  • Matriculado: ${contStatus.matriculado}\n`;
+                msg += `  • Perdido: ${contStatus.perdido}\n`;
+                msg += `  • Sem status: ${totalSemStatus}\n\n`;
 
                 if (Object.keys(porVendedor).length > 0) {
-                        msg += `📋 *Por vendedor:*\n`;
+                        msg += `👤 *Por vendedor (ontem):*\n`;
                         for (const [vendedor, dados] of Object.entries(porVendedor)) {
-                                msg += `• ${vendedor}: ${dados.total} lead(s)`;
-                                if (dados.semStatus > 0) {
-                                        msg += ` _(${dados.semStatus} sem status)_`;
-                                }
+                                msg += `  • ${vendedor}: ${dados.total} lead(s)`;
+                                if (dados.semStatus > 0) msg += ` _(${dados.semStatus} sem status)_`;
                                 msg += '\n';
                         }
                 } else {
                         msg += `_Nenhum lead novo ontem._`;
+                }
+
+                // Seção de status alterados ontem
+                const totalAlterados = statusAlteradosOntem.length;
+                if (totalAlterados > 0) {
+                        msg += `\n✏️ *Status alterados ontem: ${totalAlterados}*\n`;
+                        const labels = { novo: 'Novo', em_andamento: 'Em andamento', matriculado: 'Matriculado', perdido: 'Perdido' };
+                        for (const [status, nomes] of Object.entries(alteradosPorStatus)) {
+                                if (nomes.length > 0) {
+                                        msg += `  • ${labels[status]}: ${nomes.join(', ')}\n`;
+                                }
+                        }
                 }
 
                 await sendWhatsApp(NUMERO_GERENTE, msg);
@@ -1252,10 +1278,11 @@ function agendarLembreteEscala() {
                 const agora = new Date();
                 const proxima = new Date(agora);
                 // Avança até a próxima sexta (dia 5)
-                const diasAteSexta = (5 - proxima.getUTCDay() + 7) % 7 || 7;
+                // diasAteSexta = 0 se hoje É sexta, >0 caso contrário
+                const diasAteSexta = (5 - proxima.getUTCDay() + 7) % 7;
                 proxima.setUTCDate(proxima.getUTCDate() + diasAteSexta);
                 proxima.setUTCHours(22, 0, 0, 0); // 19h BRT = 22h UTC
-                // Se já passou essa sexta, pega a próxima
+                // Se já passou (sexta mas depois das 22h UTC), pega a próxima semana
                 if (proxima <= agora) proxima.setUTCDate(proxima.getUTCDate() + 7);
                 return proxima - agora;
         }
