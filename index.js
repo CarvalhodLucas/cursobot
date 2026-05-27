@@ -1175,8 +1175,31 @@ async function enviarResumoDiario() {
                         .eq('tem_msg_cliente', true);
 
                 const totalLeadsNovos = leadsNovos?.length || 0;
-                const viaBot      = (leadsNovos || []).filter(l => l.tem_msg_bot).length;
-                const viaVendedor = totalLeadsNovos - viaBot;
+
+                // Busca nomes salvos dos leads novos (se houver)
+                const telefonesNovos = (leadsNovos || []).map(l => l.telefone);
+                let nomesLeadsNovos = {};
+                if (telefonesNovos.length > 0) {
+                        const { data: statusNovos } = await supabase
+                                .from('status_de_leads')
+                                .select('telefone, nome')
+                                .in('telefone', telefonesNovos);
+                        (statusNovos || []).forEach(s => { if (s.nome) nomesLeadsNovos[s.telefone] = s.nome; });
+                }
+
+                // Agrupa leads novos por canal (bot vs vendedor) e por vendedor
+                const leadsViaBot = (leadsNovos || []).filter(l => l.tem_msg_bot);
+                const leadsViaVendedor = (leadsNovos || []).filter(l => !l.tem_msg_bot);
+                const viaBot      = leadsViaBot.length;
+                const viaVendedor = leadsViaVendedor.length;
+
+                // Agrupa leads por vendedor (apenas os via vendedor)
+                const leadsPorVendedor = {};
+                leadsViaVendedor.forEach(l => {
+                        const v = l.vendedor || 'desconhecido';
+                        if (!leadsPorVendedor[v]) leadsPorVendedor[v] = [];
+                        leadsPorVendedor[v].push(l);
+                });
 
                 // Contagem por status (geral)
                 const contStatus = { novo: 0, em_andamento: 0, matriculado: 0, perdido: 0 };
@@ -1197,7 +1220,7 @@ async function enviarResumoDiario() {
                         }
                 });
 
-                // Por vendedor (leads novos de ontem)
+                // Por vendedor — contagem com sem status (para seção separada)
                 const porVendedor = {};
                 (leadsNovos || []).forEach(l => {
                         const v = l.vendedor || 'desconhecido';
@@ -1210,9 +1233,30 @@ async function enviarResumoDiario() {
                 const dataStr = ontemInicio.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', year: 'numeric' });
                 let msg = `📊 *Resumo do dia ${dataStr}*\n\n`;
 
-                msg += `👥 *Leads novos: ${totalLeadsNovos}*\n`;
-                msg += `  🤖 Via bot: ${viaBot}\n`;
-                msg += `  🧑 Via vendedor: ${viaVendedor}\n\n`;
+                msg += `👥 *Leads novos: ${totalLeadsNovos}*\n\n`;
+
+                if (viaBot > 0) {
+                        msg += `  🤖 *Via bot: ${viaBot}*\n`;
+                        leadsViaBot.forEach(l => {
+                                const nome = nomesLeadsNovos[l.telefone] || 'sem nome';
+                                msg += `    • ${nome} — ${l.telefone}\n`;
+                        });
+                        msg += '\n';
+                }
+
+                if (viaVendedor > 0) {
+                        msg += `  🧑 *Via vendedor: ${viaVendedor}*\n`;
+                        for (const [vendedor, leads] of Object.entries(leadsPorVendedor)) {
+                                msg += `  _${vendedor}:_\n`;
+                                leads.forEach(l => {
+                                        const nome = nomesLeadsNovos[l.telefone] || 'sem nome';
+                                        msg += `    • ${nome} — ${l.telefone}\n`;
+                                });
+                        }
+                        msg += '\n';
+                }
+
+                if (totalLeadsNovos === 0) msg += `  _Nenhum lead novo ontem._\n\n`;
 
                 msg += `📋 *Status geral dos leads:*\n`;
                 msg += `  • Novo: ${contStatus.novo}\n`;
@@ -1221,15 +1265,14 @@ async function enviarResumoDiario() {
                 msg += `  • Perdido: ${contStatus.perdido}\n`;
                 msg += `  • Sem status: ${totalSemStatus}\n\n`;
 
-                if (Object.keys(porVendedor).length > 0) {
-                        msg += `👤 *Por vendedor (ontem):*\n`;
-                        for (const [vendedor, dados] of Object.entries(porVendedor)) {
-                                msg += `  • ${vendedor}: ${dados.total} lead(s)`;
-                                if (dados.semStatus > 0) msg += ` _(${dados.semStatus} sem status)_`;
-                                msg += '\n';
-                        }
-                } else {
-                        msg += `_Nenhum lead novo ontem._`;
+                // Resumo por vendedor (sem status)
+                const vendedoresComPendencia = Object.entries(porVendedor).filter(([, d]) => d.semStatus > 0);
+                if (vendedoresComPendencia.length > 0) {
+                        msg += `⚠️ *Leads sem status (ontem):*\n`;
+                        vendedoresComPendencia.forEach(([vendedor, dados]) => {
+                                msg += `  • ${vendedor}: ${dados.semStatus} sem status\n`;
+                        });
+                        msg += '\n';
                 }
 
                 // Seção de status alterados ontem
@@ -1264,8 +1307,9 @@ function agendarResumoDiario() {
 
         setTimeout(() => {
                 enviarResumoDiario();
+                checkLeadsPausados();
                 // Depois da primeira execução, repete a cada 24h
-                setInterval(enviarResumoDiario, 24 * 60 * 60 * 1000);
+                setInterval(() => { enviarResumoDiario(); checkLeadsPausados(); }, 24 * 60 * 60 * 1000);
         }, msAteProxima);
 }
 // ────────────────────────────────────────────────────────────────────────────
@@ -1300,6 +1344,47 @@ function agendarLembreteEscala() {
         }
 
         agendar();
+}
+// ────────────────────────────────────────────────────────────────────────────
+
+// ── Lembrete de leads pausados ───────────────────────────────────────────────
+async function checkLeadsPausados() {
+        try {
+                // Data de hoje no formato YYYY-MM-DD no horário de Brasília
+                const hoje = new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+
+                const { data: pausados, error } = await supabase
+                        .from('status_de_leads')
+                        .select('telefone, nome, data_retorno')
+                        .eq('status', 'pausado')
+                        .eq('data_retorno', hoje);
+
+                if (error) throw error;
+                if (!pausados || pausados.length === 0) return;
+
+                // Busca o vendedor de cada lead pausado
+                for (const lead of pausados) {
+                        const { data: resumo } = await supabase
+                                .from('leads_resumo')
+                                .select('vendedor')
+                                .eq('telefone', lead.telefone)
+                                .single();
+
+                        const vendedor = resumo?.vendedor?.toLowerCase();
+                        let numeroVendedor = null;
+                        if (vendedor && vendedor.includes('rebecca')) numeroVendedor = process.env.NUMERO_REBECCA;
+                        else if (vendedor && vendedor.includes('paulo')) numeroVendedor = process.env.NUMERO_PAULO;
+
+                        if (!numeroVendedor) continue;
+
+                        const nome = lead.nome || lead.telefone;
+                        const msg = `🔔 Lembrete! Hoje é o dia de retomar contato com *${nome}* (${lead.telefone}).\n\nEsse lead estava pausado aguardando esta data. Bora entrar em contato? 💪`;
+                        await sendWhatsApp(numeroVendedor, msg);
+                        console.log(`🔔 Lembrete de lead pausado enviado: ${lead.telefone} → ${vendedor}`);
+                }
+        } catch (err) {
+                console.error('❌ Erro ao checar leads pausados:', err.message);
+        }
 }
 // ────────────────────────────────────────────────────────────────────────────
 
