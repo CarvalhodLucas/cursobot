@@ -1202,7 +1202,7 @@ async function enviarResumoDiario() {
                 });
 
                 // Contagem por status (geral)
-                const contStatus = { novo: 0, em_andamento: 0, matriculado: 0, perdido: 0 };
+                const contStatus = { novo: 0, em_andamento: 0, matriculado: 0, aluno: 0, perdido: 0 };
                 (todosStatus || []).forEach(s => {
                         if (contStatus[s.status] !== undefined) contStatus[s.status]++;
                 });
@@ -1213,7 +1213,7 @@ async function enviarResumoDiario() {
                 const statusAlteradosOntem = (todosStatus || []).filter(s =>
                         s.updated_at && s.updated_at >= inicioISO && s.updated_at <= fimISO
                 );
-                const alteradosPorStatus = { novo: [], em_andamento: [], matriculado: [], perdido: [] };
+                const alteradosPorStatus = { novo: [], em_andamento: [], matriculado: [], aluno: [], perdido: [] };
                 statusAlteradosOntem.forEach(s => {
                         if (alteradosPorStatus[s.status]) {
                                 alteradosPorStatus[s.status].push(s.nome || s.telefone);
@@ -1262,6 +1262,7 @@ async function enviarResumoDiario() {
                 msg += `  • Novo: ${contStatus.novo}\n`;
                 msg += `  • Em andamento: ${contStatus.em_andamento}\n`;
                 msg += `  • Matriculado: ${contStatus.matriculado}\n`;
+                msg += `  • Aluno: ${contStatus.aluno}\n`;
                 msg += `  • Perdido: ${contStatus.perdido}\n`;
                 msg += `  • Sem status: ${totalSemStatus}\n\n`;
 
@@ -1279,7 +1280,7 @@ async function enviarResumoDiario() {
                 const totalAlterados = statusAlteradosOntem.length;
                 if (totalAlterados > 0) {
                         msg += `\n✏️ *Status alterados ontem: ${totalAlterados}*\n`;
-                        const labels = { novo: 'Novo', em_andamento: 'Em andamento', matriculado: 'Matriculado', perdido: 'Perdido' };
+                        const labels = { novo: 'Novo', em_andamento: 'Em andamento', matriculado: 'Matriculado', aluno: 'Aluno', perdido: 'Perdido' };
                         for (const [status, nomes] of Object.entries(alteradosPorStatus)) {
                                 if (nomes.length > 0) {
                                         msg += `  • ${labels[status]}: ${nomes.join(', ')}\n`;
