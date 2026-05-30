@@ -41,6 +41,7 @@ const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
 const ZAPI_CLIENT_TOKEN = process.env.ZAPI_CLIENT_TOKEN;
 const NUMERO_COORDENACAO = process.env.NUMERO_COORDENACAO;
 const NUMERO_GERENTE = process.env.NUMERO_GERENTE;
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 let geminiModel;
@@ -1459,6 +1460,172 @@ function agendarAlertaVendedor(nomeVendedor, numeroVendedor, horaUTC) {
 }
 // ────────────────────────────────────────────────────────────────────────────
 
+// ── Relatório Mensal via OpenRouter ─────────────────────────────────────────
+async function gerarRelatorioMensal() {
+        if (!NUMERO_GERENTE || !OPENROUTER_API_KEY) return;
+        console.log('📋 Gerando relatório mensal...');
+
+        try {
+                // Mês anterior
+                const agora = new Date();
+                const inicioMes = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth() - 1, 1, 3, 0, 0));
+                const fimMes    = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth(), 1, 2, 59, 59));
+                const nomeMes   = inicioMes.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', month: 'long', year: 'numeric' });
+
+                const inicioISO = inicioMes.toISOString();
+                const fimISO    = fimMes.toISOString();
+
+                // 1. Leads do mês
+                const { data: leadsDoMes } = await supabase
+                        .from('leads_resumo')
+                        .select('telefone, vendedor, tem_msg_bot, primeiro_contato')
+                        .gte('primeiro_contato', inicioISO)
+                        .lte('primeiro_contato', fimISO)
+                        .eq('tem_msg_cliente', true);
+
+                // 2. Todos os status
+                const { data: todosStatus } = await supabase
+                        .from('status_de_leads')
+                        .select('telefone, status, nome, anotacao');
+
+                // 3. Amostra de conversas: 10 convertidas + 10 perdidas
+                const statusMap = {};
+                (todosStatus || []).forEach(s => { statusMap[s.telefone] = s; });
+
+                const convertidos = (leadsDoMes || []).filter(l => ['matriculado','aluno'].includes(statusMap[l.telefone]?.status));
+                const perdidos    = (leadsDoMes || []).filter(l => statusMap[l.telefone]?.status === 'perdido');
+                const amostra     = [...convertidos.slice(0, 10), ...perdidos.slice(0, 10)];
+
+                let conversasTexto = '';
+                for (const lead of amostra) {
+                        const { data: msgs } = await supabase
+                                .from('conversas')
+                                .select('mensagem, de, created_at')
+                                .eq('telefone', lead.telefone)
+                                .order('created_at', { ascending: true })
+                                .limit(15);
+
+                        if (!msgs || msgs.length === 0) continue;
+                        const st = statusMap[lead.telefone];
+                        conversasTexto += `\n--- Lead: ${st?.nome || lead.telefone} | Vendedor: ${lead.vendedor} | Status: ${st?.status || 'sem status'} ---\n`;
+                        msgs.forEach(m => {
+                                conversasTexto += `[${m.de}]: ${m.mensagem.substring(0, 200)}\n`;
+                        });
+                }
+
+                // 4. Métricas consolidadas
+                const total       = leadsDoMes?.length || 0;
+                const viaBot      = (leadsDoMes || []).filter(l => l.tem_msg_bot).length;
+                const contStatus  = { novo: 0, em_andamento: 0, matriculado: 0, aluno: 0, pausado: 0, perdido: 0, sem_status: 0 };
+                const comStatus   = new Set((todosStatus || []).map(s => s.telefone));
+                (leadsDoMes || []).forEach(l => {
+                        const s = statusMap[l.telefone]?.status;
+                        if (s && contStatus[s] !== undefined) contStatus[s]++;
+                        else if (!comStatus.has(l.telefone)) contStatus.sem_status++;
+                });
+
+                const porVendedor = {};
+                (leadsDoMes || []).forEach(l => {
+                        const v = l.vendedor || 'desconhecido';
+                        if (!porVendedor[v]) porVendedor[v] = { total: 0, convertidos: 0 };
+                        porVendedor[v].total++;
+                        if (['matriculado','aluno'].includes(statusMap[l.telefone]?.status)) porVendedor[v].convertidos++;
+                });
+
+                const vendedoresTexto = Object.entries(porVendedor)
+                        .map(([v, d]) => `${v}: ${d.total} leads, ${d.convertidos} convertidos (${total > 0 ? Math.round(d.convertidos/d.total*100) : 0}%)`)
+                        .join('\n');
+
+                // 5. Prompt para a IA
+                const prompt = `Você é um analista de CRM para uma escola de idiomas no Rio de Janeiro. Analise os dados de ${nomeMes} e gere um relatório em português, direto e prático.
+
+MÉTRICAS DO MÊS:
+- Total de leads: ${total}
+- Via bot: ${viaBot} | Via vendedor: ${total - viaBot}
+- Novo: ${contStatus.novo} | Em andamento: ${contStatus.em_andamento} | Matriculado: ${contStatus.matriculado} | Aluno: ${contStatus.aluno} | Pausado: ${contStatus.pausado} | Perdido: ${contStatus.perdido} | Sem status: ${contStatus.sem_status}
+- Taxa de conversão: ${total > 0 ? Math.round((contStatus.matriculado + contStatus.aluno) / total * 100) : 0}%
+
+POR VENDEDOR:
+${vendedoresTexto}
+
+AMOSTRA DE CONVERSAS (convertidas e perdidas):
+${conversasTexto.substring(0, 8000)}
+
+Gere um relatório com exatamente estas seções:
+1. RESUMO EXECUTIVO (3-4 linhas)
+2. PERFORMANCE DOS VENDEDORES (análise individual)
+3. PRINCIPAIS OBJEÇÕES DOS LEADS (o que mais apareceu nas conversas)
+4. PADRÕES IDENTIFICADOS (horários, perfil dos leads, o que funcionou)
+5. RECOMENDAÇÕES PARA O PRÓXIMO MÊS (3 a 5 ações práticas e concretas)
+
+Seja objetivo. Máximo 600 palavras no total.`;
+
+                // 6. Chamada OpenRouter
+                const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+                        model: 'nvidia/nemotron-super-49b-v1:free',
+                        messages: [{ role: 'user', content: prompt }],
+                        max_tokens: 1500
+                }, {
+                        headers: {
+                                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                                'Content-Type': 'application/json'
+                        },
+                        timeout: 60000
+                });
+
+                const analise = response.data?.choices?.[0]?.message?.content || 'Não foi possível gerar análise.';
+
+                // 7. Monta e envia o relatório em partes (WhatsApp tem limite de caracteres)
+                const cabecalho = `📋 *RELATÓRIO MENSAL — ${nomeMes.toUpperCase()}*\n\n📊 Leads: ${total} | Convertidos: ${contStatus.matriculado + contStatus.aluno} | Taxa: ${total > 0 ? Math.round((contStatus.matriculado + contStatus.aluno) / total * 100) : 0}%\n🤖 Via bot: ${viaBot} | 🧑 Via vendedor: ${total - viaBot}\n\n`;
+
+                const relatorioCompleto = cabecalho + analise;
+
+                // Divide em blocos de 1500 chars para não cortar no WhatsApp
+                const blocos = [];
+                let texto = relatorioCompleto;
+                while (texto.length > 1500) {
+                        const corte = texto.lastIndexOf('\n', 1500);
+                        blocos.push(texto.substring(0, corte > 0 ? corte : 1500));
+                        texto = texto.substring(corte > 0 ? corte + 1 : 1500);
+                }
+                if (texto.trim()) blocos.push(texto);
+
+                for (const bloco of blocos) {
+                        await sendWhatsApp(NUMERO_GERENTE, bloco);
+                        await new Promise(r => setTimeout(r, 1500)); // pausa entre mensagens
+                }
+
+                console.log(`📋 Relatório mensal enviado (${blocos.length} mensagem(ns))`);
+        } catch (err) {
+                console.error('❌ Erro ao gerar relatório mensal:', err.message);
+        }
+}
+
+// Agenda relatório para o dia 1 de cada mês às 8h BRT (11h UTC)
+function agendarRelatorioMensal() {
+        if (!NUMERO_GERENTE || !OPENROUTER_API_KEY) return;
+
+        function msAteProximoDia1() {
+                const agora = new Date();
+                const proxima = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth() + 1, 1, 11, 0, 0));
+                return proxima - agora;
+        }
+
+        const ms = msAteProximoDia1();
+        console.log(`⏰ Relatório mensal agendado em ${Math.round(ms / 3600000)} horas`);
+
+        setTimeout(() => {
+                gerarRelatorioMensal();
+                // Reagenda para o próximo mês após execução
+                function reagendar() {
+                        const ms = msAteProximoDia1();
+                        setTimeout(() => { gerarRelatorioMensal(); reagendar(); }, ms);
+                }
+                reagendar();
+        }, ms);
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
         console.log(`🚀 Escola Bot rodando na porta ${PORT}`);
@@ -1471,4 +1638,6 @@ app.listen(PORT, () => {
         agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
         // Lembrete semanal de escala às sextas 19h BRT (22h UTC)
         agendarLembreteEscala();
+        // Relatório mensal no dia 1 de cada mês às 8h BRT
+        agendarRelatorioMensal();
 });
