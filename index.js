@@ -1156,13 +1156,14 @@ async function enviarResumoDiario() {
                 const inicioISO = ontemInicio.toISOString();
                 const fimISO   = ontemFim.toISOString();
 
-                // Leads novos ontem (primeiro contato dentro do período)
+                // Leads novos ontem — apenas leads confirmados pelo bot (exclui alunos e desconhecidos)
                 const { data: leadsNovos } = await supabase
                         .from('leads_resumo')
                         .select('telefone, vendedor, tem_msg_bot')
                         .gte('primeiro_contato', inicioISO)
                         .lte('primeiro_contato', fimISO)
-                        .eq('tem_msg_cliente', true);
+                        .eq('tem_msg_cliente', true)
+                        .in('tipo', ['lead', 'lead_confirmado', 'lead-vendedor']);
 
                 // Todos os status cadastrados (visão geral)
                 const { data: todosStatus } = await supabase
@@ -1607,7 +1608,7 @@ function agendarRelatorioMensal() {
 
         function msAteProximoDia1() {
                 const agora = new Date();
-                const proxima = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth() + 1, 1, 11, 0, 0));
+                const proxima = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth() + 1, 1, 13, 0, 0));
                 return proxima - agora;
         }
 
