@@ -1031,8 +1031,12 @@ app.get('/buscar/:telefone', async (req, res) => {
 });
 
 // Rota para disparar o relatório mensal manualmente (teste)
+let relatorioEmAndamento = false;
 app.get('/relatorio-mensal', async (req, res) => {
         if (!checkAdminToken(req, res)) return;
+        if (relatorioEmAndamento) {
+                return res.json({ ok: false, msg: 'Relatório já está sendo gerado. Aguarde.' });
+        }
         res.json({ ok: true, msg: 'Gerando relatório mensal em background...' });
         gerarRelatorioMensal();
 });
@@ -1471,10 +1475,12 @@ function agendarAlertaVendedor(nomeVendedor, numeroVendedor, horaUTC) {
 // ── Relatório Mensal via OpenRouter ─────────────────────────────────────────
 async function gerarRelatorioMensal() {
         if (!NUMERO_GERENTE || !OPENROUTER_API_KEY) return;
+        if (relatorioEmAndamento) { console.log('⚠️ Relatório já em andamento, ignorando.'); return; }
+        relatorioEmAndamento = true;
         console.log('📋 Gerando relatório mensal...');
 
         try {
-                // Mês anterior
+                // Mês anterior completo em horário de Brasília
                 const agora = new Date();
                 const inicioMes = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth() - 1, 1, 3, 0, 0));
                 const fimMes    = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth(), 1, 2, 59, 59));
@@ -1483,13 +1489,18 @@ async function gerarRelatorioMensal() {
                 const inicioISO = inicioMes.toISOString();
                 const fimISO    = fimMes.toISOString();
 
-                // 1. Leads do mês
-                const { data: leadsDoMes } = await supabase
+                console.log(`📋 Período: ${inicioISO} até ${fimISO}`);
+
+                // 1. Leads do mês — busca por ultimo_contato também para pegar leads ativos no mês
+                const { data: leadsDoMes, error: errLeads } = await supabase
                         .from('leads_resumo')
-                        .select('telefone, vendedor, tem_msg_bot, primeiro_contato')
-                        .gte('primeiro_contato', inicioISO)
-                        .lte('primeiro_contato', fimISO)
+                        .select('telefone, vendedor, tem_msg_bot, primeiro_contato, ultimo_contato')
+                        .gte('ultimo_contato', inicioISO)
+                        .lte('ultimo_contato', fimISO)
                         .eq('tem_msg_cliente', true);
+
+                if (errLeads) console.error('❌ Erro query leads:', errLeads.message);
+                console.log(`📋 Leads encontrados: ${leadsDoMes?.length || 0}`);
 
                 // 2. Todos os status
                 const { data: todosStatus } = await supabase
@@ -1606,6 +1617,8 @@ Seja objetivo. Máximo 600 palavras no total.`;
                 console.log(`📋 Relatório mensal enviado (${blocos.length} mensagem(ns))`);
         } catch (err) {
                 console.error('❌ Erro ao gerar relatório mensal:', err.message);
+        } finally {
+                relatorioEmAndamento = false;
         }
 }
 
