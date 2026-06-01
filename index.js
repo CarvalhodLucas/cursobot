@@ -1322,8 +1322,14 @@ function agendarResumoDiario() {
         setTimeout(() => {
                 enviarResumoDiario();
                 checkLeadsPausados();
+                // Dia 1 do mês — dispara também o relatório mensal
+                if (new Date().getUTCDate() === 1) gerarRelatorioMensal();
                 // Depois da primeira execução, repete a cada 24h
-                setInterval(() => { enviarResumoDiario(); checkLeadsPausados(); }, 24 * 60 * 60 * 1000);
+                setInterval(() => {
+                        enviarResumoDiario();
+                        checkLeadsPausados();
+                        if (new Date().getUTCDate() === 1) gerarRelatorioMensal();
+                }, 24 * 60 * 60 * 1000);
         }, msAteProxima);
 }
 // ────────────────────────────────────────────────────────────────────────────
@@ -1622,33 +1628,6 @@ Seja objetivo. Máximo 600 palavras no total.`;
         }
 }
 
-// Agenda relatório para o dia 1 de cada mês às 10h BRT (13h UTC)
-function agendarRelatorioMensal() {
-        if (!NUMERO_GERENTE || !OPENROUTER_API_KEY) return;
-
-        function msAteProximoDia1() {
-                const agora = new Date();
-                // Tenta o dia 1 do mês atual às 13h UTC
-                const proximaEsseMes = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth(), 1, 13, 0, 0));
-                // Se ainda não passou, agenda para hoje (dia 1 do mês atual)
-                if (proximaEsseMes > agora) return proximaEsseMes - agora;
-                // Caso contrário agenda para o próximo mês
-                const proximoMes = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth() + 1, 1, 13, 0, 0));
-                return proximoMes - agora;
-        }
-
-        const ms = msAteProximoDia1();
-        console.log(`⏰ Relatório mensal agendado em ${Math.round(ms / 3600000)} horas`);
-
-        setTimeout(() => {
-                gerarRelatorioMensal();
-                function reagendar() {
-                        const ms = msAteProximoDia1();
-                        setTimeout(() => { gerarRelatorioMensal(); reagendar(); }, ms);
-                }
-                reagendar();
-        }, ms);
-}
 // ────────────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
@@ -1663,6 +1642,4 @@ app.listen(PORT, () => {
         agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
         // Lembrete semanal de escala às sextas 19h BRT (22h UTC)
         agendarLembreteEscala();
-        // Relatório mensal no dia 1 de cada mês às 8h BRT
-        agendarRelatorioMensal();
 });
