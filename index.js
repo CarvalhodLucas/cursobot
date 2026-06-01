@@ -1585,20 +1585,35 @@ Gere um relatório com exatamente estas seções:
 
 Seja objetivo. Máximo 600 palavras no total.`;
 
-                // 6. Chamada OpenRouter
-                const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-                        model: 'meta-llama/llama-3.3-70b-instruct:free',
-                        messages: [{ role: 'user', content: prompt }],
-                        max_tokens: 1500
-                }, {
-                        headers: {
-                                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-                                'Content-Type': 'application/json'
-                        },
-                        timeout: 60000
-                });
+                // 6. Chamada OpenRouter com fallback entre modelos
+                const modelos = [
+                        'meta-llama/llama-3.3-70b-instruct:free',
+                        'deepseek/deepseek-r1-0528:free',
+                        'google/gemma-3-27b-it:free'
+                ];
 
-                const analise = response.data?.choices?.[0]?.message?.content || 'Não foi possível gerar análise.';
+                let analise = null;
+                for (const modelo of modelos) {
+                        try {
+                                console.log(`📋 Tentando modelo: ${modelo}`);
+                                const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+                                        model: modelo,
+                                        messages: [{ role: 'user', content: prompt }],
+                                        max_tokens: 1500
+                                }, {
+                                        headers: {
+                                                'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+                                                'Content-Type': 'application/json'
+                                        },
+                                        timeout: 60000
+                                });
+                                analise = response.data?.choices?.[0]?.message?.content;
+                                if (analise) { console.log(`📋 Modelo usado: ${modelo}`); break; }
+                        } catch (e) {
+                                console.warn(`⚠️ Modelo ${modelo} falhou: ${e.response?.status || e.message}. Tentando próximo...`);
+                        }
+                }
+                if (!analise) analise = 'Não foi possível gerar análise automática este mês (todos os modelos falharam).';
 
                 // 7. Monta e envia o relatório em partes (WhatsApp tem limite de caracteres)
                 const cabecalho = `📋 *RELATÓRIO MENSAL — ${nomeMes.toUpperCase()}*\n\n📊 Leads: ${total} | Convertidos: ${contStatus.matriculado + contStatus.aluno} | Taxa: ${total > 0 ? Math.round((contStatus.matriculado + contStatus.aluno) / total * 100) : 0}%\n🤖 Via bot: ${viaBot} | 🧑 Via vendedor: ${total - viaBot}\n\n`;
