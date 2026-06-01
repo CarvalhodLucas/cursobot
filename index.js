@@ -1030,6 +1030,13 @@ app.get('/buscar/:telefone', async (req, res) => {
         }
 });
 
+// Rota para disparar o relatório mensal manualmente (teste)
+app.get('/relatorio-mensal', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+        res.json({ ok: true, msg: 'Gerando relatório mensal em background...' });
+        gerarRelatorioMensal();
+});
+
 // ── Persistência de estado no Supabase ─────────────────────────────────────
 // Carrega estado salvo no startup para resistir a redeploys do Railway
 async function carregarEstadoBot() {
@@ -1563,7 +1570,7 @@ Seja objetivo. Máximo 600 palavras no total.`;
 
                 // 6. Chamada OpenRouter
                 const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-                        model: 'nvidia/nemotron-super-49b-v1:free',
+                        model: 'nvidia/nemotron-3-super-120b-a12b:free',
                         messages: [{ role: 'user', content: prompt }],
                         max_tokens: 1500
                 }, {
@@ -1602,14 +1609,19 @@ Seja objetivo. Máximo 600 palavras no total.`;
         }
 }
 
-// Agenda relatório para o dia 1 de cada mês às 8h BRT (11h UTC)
+// Agenda relatório para o dia 1 de cada mês às 10h BRT (13h UTC)
 function agendarRelatorioMensal() {
         if (!NUMERO_GERENTE || !OPENROUTER_API_KEY) return;
 
         function msAteProximoDia1() {
                 const agora = new Date();
-                const proxima = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth() + 1, 1, 13, 0, 0));
-                return proxima - agora;
+                // Tenta o dia 1 do mês atual às 13h UTC
+                const proximaEsseMes = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth(), 1, 13, 0, 0));
+                // Se ainda não passou, agenda para hoje (dia 1 do mês atual)
+                if (proximaEsseMes > agora) return proximaEsseMes - agora;
+                // Caso contrário agenda para o próximo mês
+                const proximoMes = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth() + 1, 1, 13, 0, 0));
+                return proximoMes - agora;
         }
 
         const ms = msAteProximoDia1();
@@ -1617,7 +1629,6 @@ function agendarRelatorioMensal() {
 
         setTimeout(() => {
                 gerarRelatorioMensal();
-                // Reagenda para o próximo mês após execução
                 function reagendar() {
                         const ms = msAteProximoDia1();
                         setTimeout(() => { gerarRelatorioMensal(); reagendar(); }, ms);
