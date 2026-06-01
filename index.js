@@ -1587,7 +1587,7 @@ Seja objetivo. Máximo 600 palavras no total.`;
 
                 // 6. Chamada OpenRouter
                 const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-                        model: 'nvidia/nemotron-3-super-120b-a12b:free',
+                        model: 'meta-llama/llama-3.3-70b-instruct:free',
                         messages: [{ role: 'user', content: prompt }],
                         max_tokens: 1500
                 }, {
