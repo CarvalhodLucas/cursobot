@@ -1588,8 +1588,10 @@ Seja objetivo. Máximo 600 palavras no total.`;
                 // 6. Chamada OpenRouter com fallback entre modelos
                 const modelos = [
                         'meta-llama/llama-3.3-70b-instruct:free',
-                        'deepseek/deepseek-r1-0528:free',
-                        'google/gemma-3-27b-it:free'
+                        'nvidia/nemotron-3-super-120b-a12b:free',
+                        'openai/gpt-oss-120b:free',
+                        'qwen/qwen3-30b-a3b:free',
+                        'google/gemma-4-31b-it:free'
                 ];
 
                 let analise = null;
