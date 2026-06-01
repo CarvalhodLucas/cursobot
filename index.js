@@ -1517,7 +1517,7 @@ async function gerarRelatorioMensal() {
                 const statusMap = {};
                 (todosStatus || []).forEach(s => { statusMap[s.telefone] = s; });
 
-                const convertidos = (leadsDoMes || []).filter(l => ['matriculado','aluno'].includes(statusMap[l.telefone]?.status));
+                const convertidos = (leadsDoMes || []).filter(l => statusMap[l.telefone]?.status === 'matriculado');
                 const perdidos    = (leadsDoMes || []).filter(l => statusMap[l.telefone]?.status === 'perdido');
                 const amostra     = [...convertidos.slice(0, 10), ...perdidos.slice(0, 10)];
 
@@ -1554,7 +1554,7 @@ async function gerarRelatorioMensal() {
                         const v = l.vendedor || 'desconhecido';
                         if (!porVendedor[v]) porVendedor[v] = { total: 0, convertidos: 0 };
                         porVendedor[v].total++;
-                        if (['matriculado','aluno'].includes(statusMap[l.telefone]?.status)) porVendedor[v].convertidos++;
+                        if (statusMap[l.telefone]?.status === 'matriculado') porVendedor[v].convertidos++;
                 });
 
                 const vendedoresTexto = Object.entries(porVendedor)
@@ -1568,7 +1568,7 @@ MÉTRICAS DO MÊS:
 - Total de leads: ${total}
 - Via bot: ${viaBot} | Via vendedor: ${total - viaBot}
 - Novo: ${contStatus.novo} | Em andamento: ${contStatus.em_andamento} | Matriculado: ${contStatus.matriculado} | Aluno: ${contStatus.aluno} | Pausado: ${contStatus.pausado} | Perdido: ${contStatus.perdido} | Sem status: ${contStatus.sem_status}
-- Taxa de conversão: ${total > 0 ? Math.round((contStatus.matriculado + contStatus.aluno) / total * 100) : 0}%
+- Taxa de conversão: ${total > 0 ? Math.round(contStatus.matriculado / total * 100) : 0}%
 
 POR VENDEDOR:
 ${vendedoresTexto}
@@ -1618,7 +1618,7 @@ Seja objetivo. Máximo 600 palavras no total.`;
                 if (!analise) analise = 'Não foi possível gerar análise automática este mês (todos os modelos falharam).';
 
                 // 7. Monta e envia o relatório em partes (WhatsApp tem limite de caracteres)
-                const cabecalho = `📋 *RELATÓRIO MENSAL — ${nomeMes.toUpperCase()}*\n\n📊 Leads: ${total} | Convertidos: ${contStatus.matriculado + contStatus.aluno} | Taxa: ${total > 0 ? Math.round((contStatus.matriculado + contStatus.aluno) / total * 100) : 0}%\n🤖 Via bot: ${viaBot} | 🧑 Via vendedor: ${total - viaBot}\n\n`;
+                const cabecalho = `📋 *RELATÓRIO MENSAL — ${nomeMes.toUpperCase()}*\n\n📊 Leads: ${total} | Matriculados: ${contStatus.matriculado} | Taxa: ${total > 0 ? Math.round(contStatus.matriculado / total * 100) : 0}%\n🤖 Via bot: ${viaBot} | 🧑 Via vendedor: ${total - viaBot}\n\n`;
 
                 const relatorioCompleto = cabecalho + analise;
 
