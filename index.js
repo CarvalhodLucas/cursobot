@@ -786,17 +786,36 @@ app.post('/webhook', async (req, res) => {
         try {
                 // Atualiza inatividade — reseta reengajamento APENAS se ainda não foi encerrado
                 ultimaAtividade[telefone] = Date.now();
-                // Não reseta se já foi marcado como encerrado pelo checkInatividade
-                // (permite reengajamento se o cliente voltar a interagir após ficar inativo)
                 reengajamentoEnviado[telefone] = false;
                 salvarEstadoBot(telefone);
+
+                // Verifica se o número já tem status 'aluno' no CRM — encaminha direto para coordenação
+                const { data: statusCRM } = await supabase
+                        .from('status_de_leads')
+                        .select('status')
+                        .eq('telefone', telefone)
+                        .single();
+
+                if (statusCRM?.status === 'aluno') {
+                        const msgAluno = 'Olá! 😊 Vou te encaminhar para a coordenação agora. Um momento!';
+                        await sendWhatsApp(telefone, msgAluno);
+                        vendedor = 'Coordenação';
+                        vendedorPorTelefone[telefone] = 'Coordenação';
+                        await salvarMensagem(telefone, mensagem, 'cliente', 'Coordenação', 'aluno');
+                        await salvarMensagem(telefone, msgAluno, 'bot', 'Coordenação', 'aluno');
+                        if (!reengajamentoEnviado[`coord_${telefone}`]) {
+                                reengajamentoEnviado[`coord_${telefone}`] = true;
+                                await notificarCoordenacao(telefone);
+                        }
+                        return;
+                }
 
                 const reply = await askAI(telefone, mensagem);
                 let tipo = detectarTipo(mensagem, reply);
 
                 if (tipo === 'aluno' && !reengajamentoEnviado[`coord_${telefone}`]) {
                         reengajamentoEnviado[`coord_${telefone}`] = true;
-                        vendedor = 'Coordenação'; // reatribui para coordenação, não vendedor de plantão
+                        vendedor = 'Coordenação';
                         vendedorPorTelefone[telefone] = 'Coordenação';
                         await notificarCoordenacao(telefone);
                 }
