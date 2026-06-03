@@ -796,6 +796,8 @@ app.post('/webhook', async (req, res) => {
 
                 if (tipo === 'aluno' && !reengajamentoEnviado[`coord_${telefone}`]) {
                         reengajamentoEnviado[`coord_${telefone}`] = true;
+                        vendedor = 'Coordenação'; // reatribui para coordenação, não vendedor de plantão
+                        vendedorPorTelefone[telefone] = 'Coordenação';
                         await notificarCoordenacao(telefone);
                 }
 
