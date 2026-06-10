@@ -362,7 +362,7 @@ REGRAS INVIOLÁVEIS
 - NUNCA responda a perguntas fora do contexto da escola de idiomas (ex: receitas, conhecimentos gerais, programação, etc). Se a pergunta não tiver relação com a escola, responda educadamente que você é a assistente virtual da escola e retorne o foco para os cursos.
 - Para qualquer pergunta factual sobre a escola sem resposta no bloco INFORMAÇÕES VERIFICADAS, use SEMPRE: "Boa pergunta! O comercial vai te responder isso com precisão. Posso registrar seu interesse enquanto isso?"`;
 geminiModel = genAI.getGenerativeModel({
-        model: 'gemini-3.1-flash-lite',
+        model: 'gemini-2.5-flash',
         systemInstruction: SYSTEM_PROMPT
 });
 
@@ -373,7 +373,7 @@ async function askGemini(telefone, mensagem, systemPromptFinal = SYSTEM_PROMPT) 
         })).slice(0, -1); // Remove a última mensagem que será enviada no sendMessage
 
         const model = genAI.getGenerativeModel({
-                model: 'gemini-3.1-flash-lite',
+                model: 'gemini-2.5-flash',
                 systemInstruction: systemPromptFinal
         });
 
@@ -1174,7 +1174,7 @@ app.get('/classificar-antigos', async (req, res) => {
                                 .upsert({ telefone: lead.telefone, status, nome: lead.nome }, { onConflict: 'telefone' });
                         console.log(`🤖 Classificado: ${lead.nome || lead.telefone} → ${status}`);
                         contagem[status] = (contagem[status] || 0) + 1;
-                        await new Promise(r => setTimeout(r, 400));
+                        await new Promise(r => setTimeout(r, 3000)); // 3s entre chamadas — evita 429
                 } catch (err) {
                         console.error(`❌ Erro ao classificar ${lead.telefone}:`, err.message);
                         contagem.erro++;
@@ -1605,7 +1605,7 @@ async function classificarLeadIA(conversaTexto) {
 
         // Tentativa 2 — Gemini (fallback)
         try {
-                const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
+                const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
                 const result = await model.generateContent(`${systemPrompt}\n\n${texto}`);
                 return parseStatus(result.response.text());
         } catch (err) {
@@ -1949,6 +1949,13 @@ app.listen(PORT, () => {
         // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
         agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 15);
         agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
+        // Lembrete semanal de escala às sextas 19h BRT (22h UTC)        // Restaura estado persistido (inatividade, reengajamento, confirmações)
+        carregarEstadoBot();
+        // Agenda resumo diário às 8h BRT
+        agendarResumoDiario();
+        // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
+        agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 15);
+        agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
         // Lembrete semanal de escala às sextas 19h BRT (22h UTC)
-        agendarLembreteEscala();
+        agendarLembreteEscala();        agendarLembreteEscala();
 });
