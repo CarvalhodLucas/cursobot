@@ -1545,14 +1545,30 @@ async function classificarLeadIA(conversaTexto) {
 async function classificarLeadsAntigos() {
         const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
 
-        const { data: leads } = await supabase
+        // Usa ultimo_contato da leads_resumo (data real da última mensagem)
+        // em vez de updated_at do status_de_leads (que muda a cada upsert)
+        const { data: leadsAntigos } = await supabase
+                .from('leads_resumo')
+                .select('telefone, vendedor, ultimo_contato')
+                .lte('ultimo_contato', limite15d);
+
+        if (!leadsAntigos || leadsAntigos.length === 0) {
+                console.log('✅ Nenhum lead com último contato >15d');
+                return;
+        }
+
+        // Filtra apenas os que ainda estão com status "novo"
+        const telefones = leadsAntigos.map(l => l.telefone);
+        const { data: statusNovos } = await supabase
                 .from('status_de_leads')
                 .select('telefone, nome, vendedor')
-                .eq('status', 'novo')
-                .lt('updated_at', limite15d);
+                .in('telefone', telefones)
+                .eq('status', 'novo');
 
-        if (!leads || leads.length === 0) {
-                console.log('✅ Nenhum lead antigo (>15d) para classificar');
+        const leads = statusNovos || [];
+
+        if (leads.length === 0) {
+                console.log('✅ Nenhum lead antigo (>15d) com status "novo" para classificar');
                 return;
         }
 
