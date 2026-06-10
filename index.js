@@ -1117,7 +1117,7 @@ app.get('/classificar-antigos', async (req, res) => {
         // Busca direto na status_de_leads — sem depender da leads_resumo view
         const { data: leads, error } = await supabase
                 .from('status_de_leads')
-                .select('telefone, nome, vendedor')
+                .select('telefone, nome')
                 .eq('status', 'novo');
 
         if (error) return res.status(500).json({ ok: false, msg: error.message });
