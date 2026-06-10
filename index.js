@@ -1680,18 +1680,6 @@ async function classificarLeadsAntigos() {
                 }
         }
 
-        // Notifica gerente com o resumo
-        if (NUMERO_GERENTE) {
-                const msg = `🤖 *Classificação automática de leads antigos*\n\n`
-                        + `Leads com mais de 15 dias sem atividade classificados pela IA:\n`
-                        + `• Perdidos: ${contagem.perdido}\n`
-                        + `• Pausados: ${contagem.pausado}\n`
-                        + `• Em andamento: ${contagem.em_andamento}\n`
-                        + (contagem.erro > 0 ? `• Erros: ${contagem.erro}\n` : '')
-                        + `\nTotal processado: ${leads.length}`;
-                await sendWhatsApp(NUMERO_GERENTE, msg);
-        }
-
         console.log(`✅ Classificação concluída:`, contagem);
 }
 
