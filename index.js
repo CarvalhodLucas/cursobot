@@ -1114,17 +1114,46 @@ app.get('/buscar/:telefone', async (req, res) => {
 app.get('/classificar-antigos', async (req, res) => {
         if (!checkAdminToken(req, res)) return;
 
-        // Busca direto na status_de_leads — sem depender da leads_resumo view
-        const { data: leads, error } = await supabase
-                .from('status_de_leads')
-                .select('telefone, nome')
-                .eq('status', 'novo');
+        const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
 
-        if (error) return res.status(500).json({ ok: false, msg: error.message });
-        if (!leads?.length) return res.json({ ok: true, msg: 'Nenhum lead com status "novo" encontrado.', total: 0 });
+        // 1. Telefones com atividade RECENTE (menos de 15 dias)
+        const { data: recentes, error: errRec } = await supabase
+                .from('conversas')
+                .select('telefone')
+                .gte('created_at', limite15d);
+        if (errRec) return res.status(500).json({ ok: false, msg: errRec.message });
+        const telefonesRecentes = new Set((recentes || []).map(c => c.telefone));
+
+        // 2. Todos os telefones que já tiveram conversa
+        const { data: todosConversas, error: errConv } = await supabase
+                .from('conversas')
+                .select('telefone')
+                .limit(5000);
+        if (errConv) return res.status(500).json({ ok: false, msg: errConv.message });
+
+        const todosTelefones = [...new Set((todosConversas || []).map(c => c.telefone))];
+
+        // 3. Inativos = sem nenhuma conversa nos últimos 15 dias
+        const inativos = todosTelefones.filter(t => !telefonesRecentes.has(t));
+        if (!inativos.length) return res.json({ ok: true, msg: 'Nenhum lead inativo há mais de 15 dias.', total: 0 });
+
+        // 4. Dos inativos, pega só os sem status ou com status "novo"
+        const { data: comStatus } = await supabase
+                .from('status_de_leads')
+                .select('telefone, status, nome')
+                .in('telefone', inativos);
+
+        const statusMap = {};
+        (comStatus || []).forEach(s => { statusMap[s.telefone] = s; });
+
+        const leads = inativos
+                .filter(tel => !statusMap[tel] || statusMap[tel].status === 'novo')
+                .map(tel => ({ telefone: tel, nome: statusMap[tel]?.nome || null }));
+
+        if (!leads.length) return res.json({ ok: true, msg: 'Todos os leads já têm status definido.', total: 0 });
 
         // Responde imediatamente e processa em background
-        res.json({ ok: true, msg: `Classificando ${leads.length} lead(s) em background. Sem WhatsApp — só atualiza Supabase.`, total: leads.length });
+        res.json({ ok: true, msg: `Classificando ${leads.length} lead(s) em background. Acompanhe nos logs do Railway.`, total: leads.length });
 
         const contagem = { perdido: 0, pausado: 0, em_andamento: 0, erro: 0 };
         for (const lead of leads) {
@@ -1141,7 +1170,8 @@ app.get('/classificar-antigos', async (req, res) => {
                         const status = await classificarLeadIA(texto);
                         if (!status) { contagem.erro++; continue; }
 
-                        await supabase.from('status_de_leads').update({ status }).eq('telefone', lead.telefone);
+                        await supabase.from('status_de_leads')
+                                .upsert({ telefone: lead.telefone, status, nome: lead.nome }, { onConflict: 'telefone' });
                         console.log(`🤖 Classificado: ${lead.nome || lead.telefone} → ${status}`);
                         contagem[status] = (contagem[status] || 0) + 1;
                         await new Promise(r => setTimeout(r, 400));
@@ -1912,8 +1942,7 @@ Seja objetivo. Máximo 600 palavras no total.`;
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-        console.log(`🚀 Escola Bot rodando na porta ${PORT}`);
-        // Restaura estado persistido (inatividade, reengajamento, confirmações)
+        console.log(`🚀 Escola Bot rodando na porta ${PORT}`);        // Restaura estado persistido (inatividade, reengajamento, confirmações)
         carregarEstadoBot();
         // Agenda resumo diário às 8h BRT
         agendarResumoDiario();
