@@ -1647,13 +1647,21 @@ async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
         }
 }
 
+// Pausa segura entre envios WhatsApp para evitar ban (200 segundos)
+const PAUSA_WHATSAPP_MS = 200 * 1000;
+
 // ── Processa backlog: IA para leads antigos + pergunta ao vendedor para recentes
 async function processarBacklogNovos() {
-        // 1. Leads > 15 dias → IA classifica automaticamente
+        // 1. Leads > 15 dias → IA classifica e avisa gerente
         await classificarLeadsAntigos();
+
         // 2. Leads ≤ 15 dias → pergunta ao vendedor um por um
+        //    200s de pausa entre cada envio para não acionar o ban do WhatsApp
         for (const [nome, numEnv] of [['Rebecca', process.env.NUMERO_REBECCA], ['Paulo', process.env.NUMERO_PAULO]]) {
-                if (numEnv) await enviarAlertaVendedor(nome, numEnv);
+                if (!numEnv) continue;
+                console.log(`⏳ Aguardando ${PAUSA_WHATSAPP_MS / 1000}s antes de enviar para ${nome}...`);
+                await new Promise(r => setTimeout(r, PAUSA_WHATSAPP_MS));
+                await enviarAlertaVendedor(nome, numEnv);
         }
 }
 
@@ -1829,7 +1837,7 @@ Seja objetivo. Máximo 600 palavras no total.`;
 
                 for (const bloco of blocos) {
                         await sendWhatsApp(NUMERO_GERENTE, bloco);
-                        await new Promise(r => setTimeout(r, 1500)); // pausa entre mensagens
+                        await new Promise(r => setTimeout(r, PAUSA_WHATSAPP_MS)); // 200s entre blocos
                 }
 
                 console.log(`📋 Relatório mensal enviado (${blocos.length} mensagem(ns))`);
