@@ -60,8 +60,8 @@ const reengajamentoEnviado = {};
 // Cache de vendedor por telefone para a sessão atual
 const vendedorPorTelefone = {};
 
-// Leads pendentes de atualização por vendedor (chave = telefone do vendedor)
-// { '5521999999999': [{idx:1, telefone:'5521888888', nome:'João'}, ...] }
+// Fila de leads pendentes por vendedor (chave = telefone do vendedor)
+// { '5521999999999': { atual: {telefone, nome}, fila: [...restantes] } }
 const pendentesAtualizacao = {};
 
 // Rodízio para o período da tarde
@@ -767,48 +767,53 @@ app.post('/webhook', async (req, res) => {
         const numPaulo   = normalizePhone(process.env.NUMERO_PAULO   || '');
         const ehVendedor = (telefone === numRebecca && numRebecca) || (telefone === numPaulo && numPaulo);
 
-        if (ehVendedor && pendentesAtualizacao[telefone]?.length > 0) {
-                // Formato esperado: "1 matriculado" | "2 perdido" | "3 em andamento" | "4 pausado"
-                const match = mensagem.trim().match(/^(\d+)\s+(.+)$/i);
-                if (match) {
-                        const idx     = parseInt(match[1], 10) - 1;
-                        const statusRaw = match[2].trim().toLowerCase()
-                                .replace('em andamento', 'em_andamento')
-                                .replace('matriculado', 'matriculado')
-                                .replace('perdido', 'perdido')
-                                .replace('pausado', 'pausado')
-                                .replace('novo', 'novo');
+        if (ehVendedor && pendentesAtualizacao[telefone]?.atual) {
+                const entrada = pendentesAtualizacao[telefone];
+                const lead = entrada.atual;
+                const nomeVendedorResposta = (telefone === numRebecca) ? 'Rebecca' : 'Paulo';
 
-                        const pendentes = pendentesAtualizacao[telefone];
-                        const lead = pendentes[idx];
+                // Normaliza a resposta para aceitar variações
+                const statusRaw = mensagem.trim().toLowerCase()
+                        .replace('em andamento', 'em_andamento')
+                        .replace('emandamento', 'em_andamento')
+                        .replace('matriculado', 'matriculado')
+                        .replace('perdido', 'perdido')
+                        .replace('pausado', 'pausado')
+                        .replace('aluno', 'aluno');
 
-                        const statusValidos = ['novo', 'em_andamento', 'matriculado', 'perdido', 'pausado', 'aluno'];
-                        if (lead && statusValidos.includes(statusRaw)) {
-                                await supabase.from('status_de_leads')
-                                        .upsert({ telefone: lead.telefone, status: statusRaw, nome: lead.nome },
-                                                 { onConflict: 'telefone' });
+                const statusValidos = ['em_andamento', 'matriculado', 'perdido', 'pausado', 'aluno'];
 
-                                // Remove da lista de pendentes
-                                pendentesAtualizacao[telefone].splice(idx, 1);
+                if (statusValidos.includes(statusRaw)) {
+                        // Atualiza no Supabase
+                        await supabase.from('status_de_leads')
+                                .upsert({ telefone: lead.telefone, status: statusRaw, nome: lead.nome },
+                                         { onConflict: 'telefone' });
 
-                                const restam = pendentesAtualizacao[telefone].length;
-                                const nomeVendedorResposta = (telefone === numRebecca) ? 'Rebecca' : 'Paulo';
-                                let confirmacao = `✅ *${lead.nome || lead.telefone}* → *${match[2].trim()}*`;
-                                if (restam > 0) confirmacao += `\n\nAinda faltam ${restam} lead(s). Continue respondendo no mesmo formato.`;
-                                else { confirmacao += `\n\n🎉 Todos os leads atualizados! Obrigado, ${nomeVendedorResposta}.`; delete pendentesAtualizacao[telefone]; }
+                        const labelStatus = statusRaw.replace('em_andamento', 'Em Andamento').replace(/^\w/, c => c.toUpperCase());
+                        let confirmacao = `✅ *${lead.nome || lead.telefone}* → *${labelStatus}*`;
 
-                                await sendWhatsApp(telefone, confirmacao);
-                                console.log(`✅ Status atualizado por ${nomeVendedorResposta}: ${lead.telefone} → ${statusRaw}`);
-                                return;
-                        } else if (!lead) {
-                                await sendWhatsApp(telefone, `❌ Número inválido. Responda com um número entre 1 e ${pendentesAtualizacao[telefone].length}.`);
-                                return;
+                        // Avança para o próximo da fila
+                        if (entrada.fila.length > 0) {
+                                const proximo = entrada.fila.shift();
+                                pendentesAtualizacao[telefone].atual = proximo;
+                                const restam = entrada.fila.length + 1;
+                                confirmacao += `\n\n➡️ Próximo (${restam} restante${restam > 1 ? 's' : ''}):\n`;
+                                confirmacao += `👤 *${proximo.nome || 'sem nome'}*\n📞 ${proximo.telefone}\n\n`;
+                                confirmacao += `Como ficou? Responda: *matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`;
                         } else {
-                                await sendWhatsApp(telefone, `❌ Status inválido. Use: *novo*, *em andamento*, *matriculado*, *pausado* ou *perdido*.`);
-                                return;
+                                delete pendentesAtualizacao[telefone];
+                                confirmacao += `\n\n🎉 Todos os leads atualizados! Obrigado, ${nomeVendedorResposta}!`;
                         }
+
+                        await sendWhatsApp(telefone, confirmacao);
+                        console.log(`✅ Status por ${nomeVendedorResposta}: ${lead.telefone} → ${statusRaw}`);
+                        return;
+                } else {
+                        // Resposta inválida — repete a pergunta
+                        await sendWhatsApp(telefone,
+                                `❓ Não entendi. Para *${lead.nome || lead.telefone}*, responda com:\n*matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`);
+                        return;
                 }
-                // Se o vendedor digitou algo mas não no formato correto, ignora e deixa seguir
         }
         // ─────────────────────────────────────────────────────────────────────────
 
@@ -1490,51 +1495,163 @@ async function checkLeadsPausados() {
 }
 // ────────────────────────────────────────────────────────────────────────────
 
-// ── Alerta interativo de leads com status "novo" para vendedores ─────────────
+// ── Classifica um lead via IA com base nas últimas mensagens (Groq → Gemini) ──
+async function classificarLeadIA(conversaTexto) {
+        const systemPrompt = 'Você classifica leads de uma escola de idiomas. Analise as mensagens e responda APENAS com uma palavra: perdido | pausado | em_andamento';
+        const texto = conversaTexto || '(sem mensagens)';
+
+        function parseStatus(raw) {
+                raw = raw.trim().toLowerCase();
+                if (raw.includes('perdido'))                          return 'perdido';
+                if (raw.includes('pausado'))                          return 'pausado';
+                if (raw.includes('em_andamento') || raw.includes('andamento')) return 'em_andamento';
+                return 'perdido'; // fallback conservador
+        }
+
+        // Tentativa 1 — Groq chave principal
+        for (const key of [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_2].filter(Boolean)) {
+                try {
+                        const resp = await axios.post(
+                                'https://api.groq.com/openai/v1/chat/completions',
+                                {
+                                        model: 'llama-3.3-70b-versatile',
+                                        messages: [
+                                                { role: 'system', content: systemPrompt },
+                                                { role: 'user', content: texto }
+                                        ],
+                                        max_tokens: 10,
+                                        temperature: 0
+                                },
+                                { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 8000 }
+                        );
+                        return parseStatus(resp.data.choices[0].message.content);
+                } catch (err) {
+                        console.warn('⚠️ Groq classificação falhou, tentando próximo...', err.message);
+                }
+        }
+
+        // Tentativa 2 — Gemini (fallback)
+        try {
+                const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-lite' });
+                const result = await model.generateContent(`${systemPrompt}\n\n${texto}`);
+                return parseStatus(result.response.text());
+        } catch (err) {
+                console.error('❌ Gemini classificação também falhou:', err.message);
+                return null;
+        }
+}
+
+// ── Classifica automaticamente leads com mais de 15 dias sem atividade ───────
+async function classificarLeadsAntigos() {
+        const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+
+        const { data: leads } = await supabase
+                .from('status_de_leads')
+                .select('telefone, nome, vendedor')
+                .eq('status', 'novo')
+                .lt('updated_at', limite15d);
+
+        if (!leads || leads.length === 0) {
+                console.log('✅ Nenhum lead antigo (>15d) para classificar');
+                return;
+        }
+
+        console.log(`🤖 Classificando ${leads.length} lead(s) com mais de 15 dias...`);
+        const contagem = { perdido: 0, pausado: 0, em_andamento: 0, erro: 0 };
+
+        for (const lead of leads) {
+                try {
+                        // Busca últimas 8 mensagens da conversa
+                        const { data: msgs } = await supabase
+                                .from('conversas')
+                                .select('mensagem, de')
+                                .eq('telefone', lead.telefone)
+                                .order('created_at', { ascending: false })
+                                .limit(8);
+
+                        const texto = (msgs || []).reverse()
+                                .map(m => `${m.de === 'bot' ? 'Bot' : m.de === 'vendedor' ? 'Vendedor' : 'Lead'}: ${m.mensagem}`)
+                                .join('\n');
+
+                        const status = await classificarLeadIA(texto);
+                        if (!status) { contagem.erro++; continue; }
+
+                        await supabase.from('status_de_leads')
+                                .update({ status })
+                                .eq('telefone', lead.telefone);
+
+                        contagem[status] = (contagem[status] || 0) + 1;
+                        console.log(`🤖 ${lead.nome || lead.telefone} → ${status}`);
+
+                        // Pausa de 300ms entre chamadas para não sobrecarregar Groq
+                        await new Promise(r => setTimeout(r, 300));
+                } catch (err) {
+                        console.error(`❌ Erro ao classificar ${lead.telefone}:`, err.message);
+                        contagem.erro++;
+                }
+        }
+
+        // Notifica gerente com o resumo
+        if (NUMERO_GERENTE) {
+                const msg = `🤖 *Classificação automática de leads antigos*\n\n`
+                        + `Leads com mais de 15 dias sem atividade classificados pela IA:\n`
+                        + `• Perdidos: ${contagem.perdido}\n`
+                        + `• Pausados: ${contagem.pausado}\n`
+                        + `• Em andamento: ${contagem.em_andamento}\n`
+                        + (contagem.erro > 0 ? `• Erros: ${contagem.erro}\n` : '')
+                        + `\nTotal processado: ${leads.length}`;
+                await sendWhatsApp(NUMERO_GERENTE, msg);
+        }
+
+        console.log(`✅ Classificação concluída:`, contagem);
+}
+
+// ── Alerta interativo de leads "novo" com ≤15 dias (pergunta ao vendedor) ────
 async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
         if (!numeroVendedor) return;
 
         try {
-                // Busca leads do vendedor com status "novo" (não atualizados)
+                const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+
+                // Apenas leads com status "novo" atualizados nos últimos 15 dias
                 const { data: leadsNovos } = await supabase
                         .from('status_de_leads')
                         .select('telefone, nome, status, vendedor')
                         .ilike('vendedor', `%${nomeVendedor}%`)
                         .eq('status', 'novo')
+                        .gte('updated_at', limite15d)          // ≤ 15 dias
                         .order('updated_at', { ascending: true })
-                        .limit(20); // máx 20 por vez para não sobrecarregar
+                        .limit(20);
 
                 if (!leadsNovos || leadsNovos.length === 0) {
-                        console.log(`✅ ${nomeVendedor}: nenhum lead "novo" pendente`);
+                        console.log(`✅ ${nomeVendedor}: nenhum lead "novo" recente para atualizar`);
                         return;
                 }
 
-                // Salva os pendentes em memória para processar as respostas
+                // Monta fila: primeiro lead vira "atual", o resto fica na fila
+                const todos = leadsNovos.map(l => ({ telefone: l.telefone, nome: l.nome || 'sem nome' }));
                 const numNorm = normalizePhone(numeroVendedor);
-                pendentesAtualizacao[numNorm] = leadsNovos.map((l, i) => ({
-                        idx: i + 1,
-                        telefone: l.telefone,
-                        nome: l.nome || 'sem nome'
-                }));
+                pendentesAtualizacao[numNorm] = { atual: todos[0], fila: todos.slice(1) };
 
-                // Monta mensagem numerada
-                let msg = `Oi, ${nomeVendedor}! 👋 Você tem *${leadsNovos.length} lead(s)* com status "Novo" — me conta como ficou cada um:\n\n`;
-                leadsNovos.forEach((l, i) => {
-                        msg += `*${i + 1}.* ${l.nome || 'sem nome'} — ${l.telefone}\n`;
-                });
-                msg += `\n📝 *Como responder:* número + status\n`;
-                msg += `Ex: *1 matriculado* ou *2 perdido* ou *3 em andamento* ou *4 pausado*\n\n`;
-                msg += `_Você pode responder um de cada vez ou vários seguidos._`;
+                // Envia apenas o PRIMEIRO lead
+                const primeiro = todos[0];
+                let msg = `Oi, ${nomeVendedor}! 👋 Você tem *${leadsNovos.length} lead(s)* recentes para atualizar.\n\n`;
+                msg += `Vamos um por um 😊\n\n`;
+                msg += `👤 *${primeiro.nome}*\n📞 ${primeiro.telefone}\n\n`;
+                msg += `Como ficou? Responda: *matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`;
 
                 await sendWhatsApp(numeroVendedor, msg);
-                console.log(`🔔 Alerta interativo enviado para ${nomeVendedor}: ${leadsNovos.length} lead(s)`);
+                console.log(`🔔 Alerta sequencial enviado para ${nomeVendedor}: ${leadsNovos.length} lead(s)`);
         } catch (err) {
                 console.error(`❌ Erro ao enviar alerta para ${nomeVendedor}:`, err.message);
         }
 }
 
-// ── Processa backlog de leads "novo" (disparo manual via rota admin) ──────────
+// ── Processa backlog: IA para leads antigos + pergunta ao vendedor para recentes
 async function processarBacklogNovos() {
+        // 1. Leads > 15 dias → IA classifica automaticamente
+        await classificarLeadsAntigos();
+        // 2. Leads ≤ 15 dias → pergunta ao vendedor um por um
         for (const [nome, numEnv] of [['Rebecca', process.env.NUMERO_REBECCA], ['Paulo', process.env.NUMERO_PAULO]]) {
                 if (numEnv) await enviarAlertaVendedor(nome, numEnv);
         }
@@ -1646,7 +1763,6 @@ async function gerarRelatorioMensal() {
 MÉTRICAS DO MÊS:
 - Total de leads: ${total}
 - Via bot: ${viaBot} | Via vendedor: ${total - viaBot}
-- Novo: ${contStatus.novo} | Em andamento: ${contStatus.em_andamento} | Matriculado: ${contStatus.matriculado} | Aluno: ${contStatus.aluno} | Pausado: ${contStatus.pausado} | Perdido: ${contStatus.perdido} | Sem status: ${contStatus.sem_status}
 - Taxa de conversão: ${total > 0 ? Math.round(contStatus.matriculado / total * 100) : 0}%
 
 POR VENDEDOR:
