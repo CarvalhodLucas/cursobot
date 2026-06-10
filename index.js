@@ -1110,28 +1110,18 @@ app.get('/buscar/:telefone', async (req, res) => {
         }
 });
 
-// Rota para classificar leads antigos via IA — só atualiza Supabase, sem WhatsApp
+// Rota para classificar TODOS os leads "novo" via IA — só atualiza Supabase, sem WhatsApp
 app.get('/classificar-antigos', async (req, res) => {
         if (!checkAdminToken(req, res)) return;
 
-        const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
-
-        const { data: leadsAntigos } = await supabase
-                .from('leads_resumo')
-                .select('telefone, ultimo_contato')
-                .lte('ultimo_contato', limite15d);
-
-        if (!leadsAntigos?.length) return res.json({ ok: true, msg: 'Nenhum lead com último contato >15 dias.', total: 0 });
-
-        const telefones = leadsAntigos.map(l => l.telefone);
-        const { data: statusNovos } = await supabase
+        // Busca direto na status_de_leads — sem depender da leads_resumo view
+        const { data: leads, error } = await supabase
                 .from('status_de_leads')
                 .select('telefone, nome, vendedor')
-                .in('telefone', telefones)
                 .eq('status', 'novo');
 
-        const leads = statusNovos || [];
-        if (!leads.length) return res.json({ ok: true, msg: 'Nenhum lead antigo com status "novo".', total: 0 });
+        if (error) return res.status(500).json({ ok: false, msg: error.message });
+        if (!leads?.length) return res.json({ ok: true, msg: 'Nenhum lead com status "novo" encontrado.', total: 0 });
 
         // Responde imediatamente e processa em background
         res.json({ ok: true, msg: `Classificando ${leads.length} lead(s) em background. Sem WhatsApp — só atualiza Supabase.`, total: leads.length });
