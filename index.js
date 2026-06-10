@@ -1110,6 +1110,59 @@ app.get('/buscar/:telefone', async (req, res) => {
         }
 });
 
+// Rota para classificar leads antigos via IA — só atualiza Supabase, sem WhatsApp
+app.get('/classificar-antigos', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+
+        const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+
+        const { data: leadsAntigos } = await supabase
+                .from('leads_resumo')
+                .select('telefone, ultimo_contato')
+                .lte('ultimo_contato', limite15d);
+
+        if (!leadsAntigos?.length) return res.json({ ok: true, msg: 'Nenhum lead com último contato >15 dias.', total: 0 });
+
+        const telefones = leadsAntigos.map(l => l.telefone);
+        const { data: statusNovos } = await supabase
+                .from('status_de_leads')
+                .select('telefone, nome, vendedor')
+                .in('telefone', telefones)
+                .eq('status', 'novo');
+
+        const leads = statusNovos || [];
+        if (!leads.length) return res.json({ ok: true, msg: 'Nenhum lead antigo com status "novo".', total: 0 });
+
+        // Responde imediatamente e processa em background
+        res.json({ ok: true, msg: `Classificando ${leads.length} lead(s) em background. Sem WhatsApp — só atualiza Supabase.`, total: leads.length });
+
+        const contagem = { perdido: 0, pausado: 0, em_andamento: 0, erro: 0 };
+        for (const lead of leads) {
+                try {
+                        const { data: msgs } = await supabase
+                                .from('conversas').select('mensagem, de')
+                                .eq('telefone', lead.telefone)
+                                .order('created_at', { ascending: false }).limit(8);
+
+                        const texto = (msgs || []).reverse()
+                                .map(m => `${m.de === 'bot' ? 'Bot' : m.de === 'vendedor' ? 'Vendedor' : 'Lead'}: ${m.mensagem}`)
+                                .join('\n');
+
+                        const status = await classificarLeadIA(texto);
+                        if (!status) { contagem.erro++; continue; }
+
+                        await supabase.from('status_de_leads').update({ status }).eq('telefone', lead.telefone);
+                        console.log(`🤖 Classificado: ${lead.nome || lead.telefone} → ${status}`);
+                        contagem[status] = (contagem[status] || 0) + 1;
+                        await new Promise(r => setTimeout(r, 400));
+                } catch (err) {
+                        console.error(`❌ Erro ao classificar ${lead.telefone}:`, err.message);
+                        contagem.erro++;
+                }
+        }
+        console.log(`✅ /classificar-antigos concluído:`, contagem);
+});
+
 // Rota para processar backlog de leads "novo" — dispara prompt interativo aos vendedores
 app.get('/processar-novos', async (req, res) => {
         if (!checkAdminToken(req, res)) return;
@@ -1820,6 +1873,7 @@ Seja objetivo. Máximo 600 palavras no total.`;
                                 const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
                                         model: modelo,
                                         messages: [{ role: 'user', content: prompt }],
+                                        messages: [{ role: 'user', content: prompt }],
                                         max_tokens: 1500
                                 }, {
                                         headers: {
@@ -1853,7 +1907,7 @@ Seja objetivo. Máximo 600 palavras no total.`;
 
                 for (const bloco of blocos) {
                         await sendWhatsApp(NUMERO_GERENTE, bloco);
-                        await new Promise(r => setTimeout(r, PAUSA_WHATSAPP_MS)); // 200s entre blocos
+                        await new Promise(r => setTimeout(r, 1500)); // pausa entre mensagens
                 }
 
                 console.log(`📋 Relatório mensal enviado (${blocos.length} mensagem(ns))`);
