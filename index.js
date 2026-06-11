@@ -1957,4 +1957,16 @@ Seja objetivo. Máximo 600 palavras no total.`;
 
 // ────────────────────────────────────────────────────────────────────────────
 
-con
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+        console.log(`🚀 Escola Bot rodando na porta ${PORT}`);
+        // Restaura estado persistido (inatividade, reengajamento, confirmações)
+        carregarEstadoBot();
+        // Agenda resumo diário às 8h BRT
+        agendarResumoDiario();
+        // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
+        agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 15);
+        agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
+        // Lembrete semanal de escala às sextas 19h BRT (22h UTC)
+        agendarLembreteEscala();
+});
