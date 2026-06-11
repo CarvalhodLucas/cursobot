@@ -508,17 +508,46 @@ IMPORTANTE: Esses dados já foram coletados. NÃO peça nome, idade ou horário 
         }
 }
 
-async function sendWhatsApp(telefone, mensagem) {
-        try {
-                const phoneLimpo = String(telefone).replace(/\D/g, '');
-                await axios.post(
-                        `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-text`,
-                        { phone: phoneLimpo, message: mensagem },
-                        { headers: { 'Content-Type': 'application/json', 'Client-Token': ZAPI_CLIENT_TOKEN } }
-                );
-        } catch (err) {
-                console.error('Erro ao enviar:', err.response?.data || err.message);
+// ── Fila global de envio WhatsApp ────────────────────────────────────────────
+// Garante no mínimo INTERVALO_ENVIO_MS entre cada mensagem enviada,
+// evitando rajadas que causam ban mesmo em resposta a webhooks em massa.
+const INTERVALO_ENVIO_MS = 5000; // 5s entre mensagens
+const filaEnvio = [];
+let processandoFila = false;
+
+async function _enviarAgora(telefone, mensagem) {
+        const phoneLimpo = String(telefone).replace(/\D/g, '');
+        await axios.post(
+                `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-text`,
+                { phone: phoneLimpo, message: mensagem },
+                { headers: { 'Content-Type': 'application/json', 'Client-Token': ZAPI_CLIENT_TOKEN } }
+        );
+}
+
+async function _processarFilaEnvio() {
+        if (processandoFila) return;
+        processandoFila = true;
+        while (filaEnvio.length > 0) {
+                const { telefone, mensagem, resolve, reject } = filaEnvio.shift();
+                try {
+                        await _enviarAgora(telefone, mensagem);
+                        resolve();
+                } catch (err) {
+                        console.error('Erro ao enviar:', err.response?.data || err.message);
+                        reject(err);
+                }
+                if (filaEnvio.length > 0) {
+                        await new Promise(r => setTimeout(r, INTERVALO_ENVIO_MS));
+                }
         }
+        processandoFila = false;
+}
+
+async function sendWhatsApp(telefone, mensagem) {
+        return new Promise((resolve, reject) => {
+                filaEnvio.push({ telefone, mensagem, resolve, reject });
+                _processarFilaEnvio();
+        });
 }
 
 async function notificarVendedor(telefone, vendedor) {
@@ -1928,22 +1957,4 @@ Seja objetivo. Máximo 600 palavras no total.`;
 
 // ────────────────────────────────────────────────────────────────────────────
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-        console.log(`🚀 Escola Bot rodando na porta ${PORT}`);        // Restaura estado persistido (inatividade, reengajamento, confirmações)
-        carregarEstadoBot();
-        // Agenda resumo diário às 8h BRT
-        agendarResumoDiario();
-        // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
-        agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 15);
-        agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
-        // Lembrete semanal de escala às sextas 19h BRT (22h UTC)        // Restaura estado persistido (inatividade, reengajamento, confirmações)
-        carregarEstadoBot();
-        // Agenda resumo diário às 8h BRT
-        agendarResumoDiario();
-        // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
-        agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 15);
-        agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
-        // Lembrete semanal de escala às sextas 19h BRT (22h UTC)
-        agendarLembreteEscala();        agendarLembreteEscala();
-});
+con
