@@ -517,10 +517,17 @@ let processandoFila = false;
 
 async function _enviarAgora(telefone, mensagem) {
         const phoneLimpo = String(telefone).replace(/\D/g, '');
+        const phoneNumberId = process.env.META_PHONE_NUMBER_ID;
+        const accessToken   = process.env.META_ACCESS_TOKEN;
         await axios.post(
-                `https://api.z-api.io/instances/${ZAPI_INSTANCE}/token/${ZAPI_TOKEN}/send-text`,
-                { phone: phoneLimpo, message: mensagem },
-                { headers: { 'Content-Type': 'application/json', 'Client-Token': ZAPI_CLIENT_TOKEN } }
+                `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
+                {
+                        messaging_product: 'whatsapp',
+                        to: phoneLimpo,
+                        type: 'text',
+                        text: { body: mensagem }
+                },
+                { headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
         );
 }
 
@@ -759,14 +766,40 @@ function normalizePhone(phone) {
 }
 
 // Webhook
+// ── Verificação de webhook da Meta Cloud API ─────────────────────────────────
+app.get('/webhook', (req, res) => {
+        const mode      = req.query['hub.mode'];
+        const token     = req.query['hub.verify_token'];
+        const challenge = req.query['hub.challenge'];
+        if (mode === 'subscribe' && token === process.env.META_VERIFY_TOKEN) {
+                console.log('✅ Webhook Meta verificado');
+                return res.status(200).send(challenge);
+        }
+        console.warn('❌ Falha na verificação do webhook Meta');
+        return res.sendStatus(403);
+});
+
 app.post('/webhook', async (req, res) => {
         res.sendStatus(200);
 
         const body = req.body;
-        if (body.fromMe || body.isGroup) return;
+        let telefone, mensagem;
 
-        const telefone = normalizePhone(body.phone);
-        const mensagem = body.text?.message || body.text || (typeof body.text === 'string' ? body.text : null);
+        // ── Formato Meta Cloud API ────────────────────────────────────────────
+        if (body.object === 'whatsapp_business_account') {
+                const message = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+                if (!message) return;                          // status update, ignorar
+                if (message.type !== 'text') return;           // só texto por enquanto
+                telefone = normalizePhone(message.from);
+                mensagem = message.text?.body;
+
+        // ── Formato legado Z-API ──────────────────────────────────────────────
+        } else {
+                if (body.fromMe || body.isGroup) return;
+                telefone = normalizePhone(body.phone);
+                mensagem = body.text?.message || body.text || (typeof body.text === 'string' ? body.text : null);
+        }
+
         if (!telefone || !mensagem) return;
 
         // Atualiza status do último webhook recebido
