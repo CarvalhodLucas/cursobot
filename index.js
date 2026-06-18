@@ -101,7 +101,7 @@ async function getVendedor() {
 
         // 1. Domingo — Fallback
         if (dia === 0) {
-                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebecca' : 'Paulo';
+                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebecca' : ultimoVendedorFallback === 'Rebecca' ? 'Taynara' : 'Paulo';
                 return ultimoVendedorFallback;
         }
 
@@ -125,14 +125,14 @@ async function getVendedor() {
         });
 
         if (!match) {
-                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebecca' : 'Paulo';
+                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebecca' : ultimoVendedorFallback === 'Rebecca' ? 'Taynara' : 'Paulo';
                 console.log(`⚠️ Nenhum vendedor escalado para dia ${dia} às ${hora.toFixed(2)}h. Usando fallback: ${ultimoVendedorFallback}`);
                 return ultimoVendedorFallback;
         }
 
         // 3. Rodízio
         if (match.vendedor === 'rodizio' || match.tipo === 'rodizio') {
-                ultimoVendedorTarde = ultimoVendedorTarde === 'Paulo' ? 'Rebecca' : 'Paulo';
+                ultimoVendedorTarde = ultimoVendedorTarde === 'Paulo' ? 'Rebecca' : ultimoVendedorTarde === 'Rebecca' ? 'Taynara' : 'Paulo';
                 return ultimoVendedorTarde;
         }
 
@@ -565,6 +565,8 @@ async function notificarVendedor(telefone, vendedor) {
         const nomeVendedor = (vendedor || '').toLowerCase();
         const numeroVendedor = nomeVendedor === 'rebecca'
                 ? process.env.NUMERO_REBECCA
+                : nomeVendedor === 'taynara'
+                ? process.env.NUMERO_TAYNARA
                 : process.env.NUMERO_PAULO;
 
         if (!numeroVendedor) {
@@ -827,14 +829,15 @@ app.post('/webhook', async (req, res) => {
         }
 
         // ── Resposta de vendedor ao prompt de atualização de status ──────────────
-        const numRebecca = normalizePhone(process.env.NUMERO_REBECCA || '');
-        const numPaulo   = normalizePhone(process.env.NUMERO_PAULO   || '');
-        const ehVendedor = (telefone === numRebecca && numRebecca) || (telefone === numPaulo && numPaulo);
+        const numRebecca  = normalizePhone(process.env.NUMERO_REBECCA  || '');
+        const numPaulo    = normalizePhone(process.env.NUMERO_PAULO    || '');
+        const numTaynara  = normalizePhone(process.env.NUMERO_TAYNARA  || '');
+        const ehVendedor  = (telefone === numRebecca && numRebecca) || (telefone === numPaulo && numPaulo) || (telefone === numTaynara && numTaynara);
 
         if (ehVendedor && pendentesAtualizacao[telefone]?.atual) {
                 const entrada = pendentesAtualizacao[telefone];
                 const lead = entrada.atual;
-                const nomeVendedorResposta = (telefone === numRebecca) ? 'Rebecca' : 'Paulo';
+                const nomeVendedorResposta = (telefone === numRebecca) ? 'Rebecca' : (telefone === numTaynara) ? 'Taynara' : 'Paulo';
 
                 // Normaliza a resposta para aceitar variações
                 const statusRaw = mensagem.trim().toLowerCase()
@@ -1618,6 +1621,7 @@ async function checkLeadsPausados() {
                         let numeroVendedor = null;
                         if (vendedor && vendedor.includes('rebecca')) numeroVendedor = process.env.NUMERO_REBECCA;
                         else if (vendedor && vendedor.includes('paulo')) numeroVendedor = process.env.NUMERO_PAULO;
+                        else if (vendedor && vendedor.includes('taynara')) numeroVendedor = process.env.NUMERO_TAYNARA;
 
                         if (!numeroVendedor) continue;
 
@@ -1798,7 +1802,7 @@ async function processarBacklogNovos() {
 
         // 2. Leads ≤ 15 dias → pergunta ao vendedor um por um
         //    200s de pausa entre cada envio para não acionar o ban do WhatsApp
-        for (const [nome, numEnv] of [['Rebecca', process.env.NUMERO_REBECCA], ['Paulo', process.env.NUMERO_PAULO]]) {
+        for (const [nome, numEnv] of [['Rebecca', process.env.NUMERO_REBECCA], ['Paulo', process.env.NUMERO_PAULO], ['Taynara', process.env.NUMERO_TAYNARA]]) {
                 if (!numEnv) continue;
                 console.log(`⏳ Aguardando ${PAUSA_WHATSAPP_MS / 1000}s antes de enviar para ${nome}...`);
                 await new Promise(r => setTimeout(r, PAUSA_WHATSAPP_MS));
@@ -2000,7 +2004,8 @@ app.listen(PORT, () => {
         // Agenda resumo diário às 8h BRT
         agendarResumoDiario();
         // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
-        agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 15);
-        agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
+        agendarAlertaVendedor('Rebecca',  process.env.NUMERO_REBECCA,  15);
+        agendarAlertaVendedor('Paulo',    process.env.NUMERO_PAULO,    20);
+        agendarAlertaVendedor('Taynara',  process.env.NUMERO_TAYNARA,  17);
         agendarLembreteEscala();
 });
