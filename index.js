@@ -790,7 +790,9 @@ app.post('/webhook', async (req, res) => {
                 const message = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
                 if (!message) return;                          // status update, ignorar
                 if (message.type !== 'text') return;           // só texto por enquanto
-                telefone = normalizePhone(message.from);
+                // Meta já envia número com código de país (ex: 5521..., 34618...)
+                // NÃO usar normalizePhone pois ela adicionaria 55 incorretamente
+                telefone = String(message.from).replace(/\D/g, '');
                 mensagem = message.text?.body;
 
         // ── Formato legado Z-API ──────────────────────────────────────────────
@@ -1998,8 +2000,4 @@ app.listen(PORT, () => {
         // Agenda resumo diário às 8h BRT
         agendarResumoDiario();
         // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
-        agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 15);
-        agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
-        // Lembrete semanal de escala às sextas 19h BRT (22h UTC)
-        agendarLembreteEscala();
-});
+        agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 1
