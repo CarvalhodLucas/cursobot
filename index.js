@@ -2000,4 +2000,7 @@ app.listen(PORT, () => {
         // Agenda resumo diário às 8h BRT
         agendarResumoDiario();
         // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
-        agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 1
+        agendarAlertaVendedor('Rebecca', process.env.NUMERO_REBECCA, 15);
+        agendarAlertaVendedor('Paulo',   process.env.NUMERO_PAULO,   20);
+        agendarLembreteEscala();
+});
