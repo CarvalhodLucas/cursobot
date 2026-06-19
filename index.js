@@ -105,13 +105,13 @@ async function getVendedor() {
                 return ultimoVendedorFallback;
         }
 
-        // 2. Busca match na escala (com suporte a sabado_paridade)
+        // 2. Busca TODOS os vendedores ativos no horário atual (escala com sobreposição)
         const diaDoProjeto = agora.getDate();
         const ehSabado = dia === 6;
         const ehPar = diaDoProjeto % 2 === 0;
 
-        // Usamos uma pequena margem para evitar problemas de precisão com floats (16.83)
-        const match = escala.find(e => {
+        // Usamos uma pequena margem para evitar problemas de precisão com floats
+        const matches = escala.filter(e => {
                 const diaMatch = e.dia_semana === dia;
                 const horaMatch = hora >= (e.hora_inicio - 0.02) && hora < (e.hora_fim + 0.02);
                 if (!diaMatch || !horaMatch) return false;
@@ -124,19 +124,24 @@ async function getVendedor() {
                 return true;
         });
 
-        if (!match) {
+        if (matches.length === 0) {
                 ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebecca' : ultimoVendedorFallback === 'Rebecca' ? 'Taynara' : 'Paulo';
                 console.log(`⚠️ Nenhum vendedor escalado para dia ${dia} às ${hora.toFixed(2)}h. Usando fallback: ${ultimoVendedorFallback}`);
                 return ultimoVendedorFallback;
         }
 
-        // 3. Rodízio
-        if (match.vendedor === 'rodizio' || match.tipo === 'rodizio') {
-                ultimoVendedorTarde = ultimoVendedorTarde === 'Paulo' ? 'Rebecca' : ultimoVendedorTarde === 'Rebecca' ? 'Taynara' : 'Paulo';
-                return ultimoVendedorTarde;
+        // 3. Exclusivo — apenas um vendedor no horário
+        if (matches.length === 1) {
+                return matches[0].vendedor;
         }
 
-        return match.vendedor;
+        // 4. Rodízio automático entre os vendedores ativos no momento
+        const vendedoresAtivos = matches.map(m => m.vendedor);
+        const idxAtual = vendedoresAtivos.indexOf(ultimoVendedorTarde);
+        const proximoIdx = (idxAtual + 1) % vendedoresAtivos.length;
+        ultimoVendedorTarde = vendedoresAtivos[proximoIdx];
+        console.log(`🔄 Rodízio [${vendedoresAtivos.join('/')}] → ${ultimoVendedorTarde}`);
+        return ultimoVendedorTarde;
 }
 
 async function getVendedorDoTelefone(telefone) {
@@ -2003,9 +2008,4 @@ app.listen(PORT, () => {
         carregarEstadoBot();
         // Agenda resumo diário às 8h BRT
         agendarResumoDiario();
-        // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
-        agendarAlertaVendedor('Rebecca',  process.env.NUMERO_REBECCA,  15);
-        agendarAlertaVendedor('Paulo',    process.env.NUMERO_PAULO,    20);
-        agendarAlertaVendedor('Taynara',  process.env.NUMERO_TAYNARA,  17);
-        agendarLembreteEscala();
-});
+        // Alerta de leads sem
