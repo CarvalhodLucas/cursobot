@@ -562,6 +562,38 @@ async function sendWhatsApp(telefone, mensagem) {
         });
 }
 
+async function sendTemplate(telefone, templateName, variables = []) {
+        const phoneLimpo = String(telefone).replace(/\D/g, '');
+        const phoneNumberId = process.env.META_PHONE_NUMBER_ID;
+        const accessToken   = process.env.META_ACCESS_TOKEN;
+        const body = {
+                messaging_product: 'whatsapp',
+                to: phoneLimpo,
+                type: 'template',
+                template: {
+                        name: templateName,
+                        language: { code: 'pt_BR' }
+                }
+        };
+        if (variables.length > 0) {
+                body.template.components = [{
+                        type: 'body',
+                        parameters: variables.map(v => ({ type: 'text', text: String(v || '—') }))
+                }];
+        }
+        try {
+                await axios.post(
+                        `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
+                        body,
+                        { headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
+                );
+                console.log(`📨 Template "${templateName}" enviado para ${phoneLimpo}`);
+        } catch (err) {
+                console.error(`❌ Erro ao enviar template "${templateName}":`, err.response?.data || err.message);
+                throw err;
+        }
+}
+
 async function notificarVendedor(telefone, vendedor) {
         const dados = dadosLead[telefone];
         if (!dados || !dados.confirmado) return;
@@ -581,16 +613,13 @@ async function notificarVendedor(telefone, vendedor) {
 
         console.log(`📡 Notificando vendedor ${vendedor} para lead ${telefone}. Dados:`, JSON.stringify(dados));
         const telefoneLimpo = String(telefone).replace(/\D/g, '');
-        const msg = `🔔 *Novo lead confirmado!*
 
-👤 Nome: ${dados.nome || '—'}
-📚 Turma: ${dados.turma || '—'}
-⏰ Horário: ${dados.horario || '—'}
-📱 Contato: +${telefoneLimpo}
-
-Entre em contato para fechar a matrícula!`;
-
-        await sendWhatsApp(numeroVendedor, msg);
+        await sendTemplate(numeroVendedor, 'notificacao_novo_lead', [
+                dados.nome    || '—',
+                dados.turma   || '—',
+                dados.horario || '—',
+                `+${telefoneLimpo}`
+        ]);
         console.log(`✅ Lead notificado para ${vendedor} (${numeroVendedor})`);
 }
 
@@ -601,13 +630,8 @@ async function notificarCoordenacao(telefone) {
         }
 
         const telefoneLimpo = String(telefone).replace(/\D/g, '');
-        const msg = `📋 *Aluno aguardando atendimento!*
 
-📱 Contato: +${telefoneLimpo}
-
-Este número foi identificado como aluno e está aguardando suporte da coordenação.`;
-
-        await sendWhatsApp(NUMERO_COORDENACAO, msg);
+        await sendTemplate(NUMERO_COORDENACAO, 'alerta_coordenacao', [telefoneLimpo]);
         console.log(`✅ Coordenação notificada para atender ${telefone}`);
 }
 
@@ -1360,19 +1384,22 @@ async function checkInatividade() {
                         }
 
                         const dados = dadosLead[telefone] || {};
-                        let msg = '';
+                        let templateReeng = '';
+                        let varsReeng = [];
 
                         if (!dados.nome) {
-                                msg = "Olá! 😊 Ainda posso te ajudar com informações sobre nossos cursos? É só responder aqui!";
+                                templateReeng = 'reengajamento_inicial';
                         } else if (dados.nome && (!dados.turma || !dados.horario)) {
-                                msg = `Oi, ${dados.nome}! Tudo bem? Ainda estou aqui caso queira continuar conhecendo nossos cursos. 😊`;
+                                templateReeng = 'reengajamento_com_nome';
+                                varsReeng = [dados.nome];
                         } else if (dados.nome && dados.turma && dados.horario && !dados.confirmado) {
-                                msg = `Oi, ${dados.nome}! Enviei os seus dados para confirmar, mas ainda não recebi resposta. Gostaria de prosseguir com o cadastro?`;
+                                templateReeng = 'reengajamento_confirmacao';
+                                varsReeng = [dados.nome];
                         }
 
-                        if (msg) {
-                                console.log(`⏳ Reengajamento disparado para ${telefone}`);
-                                sendWhatsApp(telefone, msg);
+                        if (templateReeng) {
+                                console.log(`⏳ Reengajamento disparado para ${telefone} (${templateReeng})`);
+                                sendTemplate(telefone, templateReeng, varsReeng);
                                 reengajamentoEnviado[telefone] = true;
                                 salvarEstadoBot(telefone);
                         }
@@ -1533,6 +1560,8 @@ async function enviarResumoDiario() {
                         }
                 }
 
+                await sendTemplate(NUMERO_GERENTE, 'resumo_diario_gerente');
+                await new Promise(r => setTimeout(r, 1500));
                 await sendWhatsApp(NUMERO_GERENTE, msg);
                 console.log(`📊 Resumo diário enviado para a gerente`);
         } catch (err) {
@@ -1587,9 +1616,7 @@ function agendarLembreteEscala() {
                 const ms = msAteProximaSexta22UTC();
                 console.log(`⏰ Lembrete de escala agendado em ${Math.round(ms / 60000)} minutos`);
                 setTimeout(() => {
-                        sendWhatsApp(NUMERO_GERENTE,
-                                `Oi, Leybian! 👋 Lembrete: não esquece de atualizar a *escala de sábado* no CRM 😊`
-                        );
+                        sendTemplate(NUMERO_GERENTE, 'lembrete_escala', ['Leybian']);
                         console.log(`🔔 Lembrete de escala enviado para a gerente`);
                         agendar(); // reagenda para a próxima sexta
                 }, ms);
@@ -1631,8 +1658,7 @@ async function checkLeadsPausados() {
                         if (!numeroVendedor) continue;
 
                         const nome = lead.nome || lead.telefone;
-                        const msg = `🔔 Lembrete! Hoje é o dia de retomar contato com *${nome}* (${lead.telefone}).\n\nEsse lead estava pausado aguardando esta data. Bora entrar em contato? 💪`;
-                        await sendWhatsApp(numeroVendedor, msg);
+                        await sendTemplate(numeroVendedor, 'lembrete_lead_pausado', [nome, lead.telefone]);
                         console.log(`🔔 Lembrete de lead pausado enviado: ${lead.telefone} → ${vendedor}`);
                 }
         } catch (err) {
@@ -1783,14 +1809,15 @@ async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
                 const numNorm = normalizePhone(numeroVendedor);
                 pendentesAtualizacao[numNorm] = { atual: todos[0], fila: todos.slice(1) };
 
-                // Envia apenas o PRIMEIRO lead
+                // Envia template para abrir janela de 24h + detalhes do primeiro lead
                 const primeiro = todos[0];
-                let msg = `Oi, ${nomeVendedor}! 👋 Você tem *${leadsNovos.length} lead(s)* recentes para atualizar.\n\n`;
-                msg += `Vamos um por um 😊\n\n`;
-                msg += `👤 *${primeiro.nome}*\n📞 ${primeiro.telefone}\n\n`;
-                msg += `Como ficou? Responda: *matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`;
-
-                await sendWhatsApp(numeroVendedor, msg);
+                await sendTemplate(numeroVendedor, 'alerta_status_vendedor', [
+                        nomeVendedor,
+                        String(leadsNovos.length)
+                ]);
+                await new Promise(r => setTimeout(r, 1500));
+                const detalhe = `👤 *${primeiro.nome}*\n📞 ${primeiro.telefone}\n\nComo ficou? Responda: *matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`;
+                await sendWhatsApp(numeroVendedor, detalhe);
                 console.log(`🔔 Alerta sequencial enviado para ${nomeVendedor}: ${leadsNovos.length} lead(s)`);
         } catch (err) {
                 console.error(`❌ Erro ao enviar alerta para ${nomeVendedor}:`, err.message);
@@ -1986,6 +2013,8 @@ Seja objetivo. Máximo 600 palavras no total.`;
                 }
                 if (texto.trim()) blocos.push(texto);
 
+                await sendTemplate(NUMERO_GERENTE, 'relatorio_mensal');
+                await new Promise(r => setTimeout(r, 1500));
                 for (const bloco of blocos) {
                         await sendWhatsApp(NUMERO_GERENTE, bloco);
                         await new Promise(r => setTimeout(r, 1500)); // pausa entre mensagens
@@ -2008,4 +2037,9 @@ app.listen(PORT, () => {
         carregarEstadoBot();
         // Agenda resumo diário às 8h BRT
         agendarResumoDiario();
-        // Alerta de leads sem
+        // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
+        agendarAlertaVendedor('Rebecca',  process.env.NUMERO_REBECCA,  15);
+        agendarAlertaVendedor('Paulo',    process.env.NUMERO_PAULO,    20);
+        agendarAlertaVendedor('Taynara',  process.env.NUMERO_TAYNARA,  17);
+        agendarLembreteEscala();
+});
