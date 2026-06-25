@@ -1116,6 +1116,52 @@ app.post('/webhook-vendedor', async (req, res) => {
 
 app.get('/', (req, res) => res.send('Escola Bot rodando ✅'));
 
+// ── OAuth Callback — Embedded Signup (Coexistência Meta) ─────────────────────
+app.get('/oauth/callback', async (req, res) => {
+        const code = req.query.code;
+        const errorCode = req.query.error_code;
+
+        if (errorCode || !code) {
+                console.error('❌ OAuth callback erro:', req.query);
+                return res.send(`<h2>❌ Erro no cadastro: ${req.query.error_message || 'Cancelado'}</h2>`);
+        }
+
+        try {
+                // Troca o code pelo access token
+                const tokenRes = await axios.get('https://graph.facebook.com/v20.0/oauth/access_token', {
+                        params: {
+                                client_id: process.env.META_APP_ID,
+                                client_secret: process.env.META_APP_SECRET,
+                                code
+                        }
+                });
+
+                const accessToken = tokenRes.data.access_token;
+                console.log('✅ OAuth token obtido com sucesso');
+                console.log('🔑 Token:', accessToken);
+
+                // Salva no log para uso posterior
+                await supabase.from('conversas').insert({
+                        telefone: 'META_OAUTH',
+                        mensagem: accessToken,
+                        de: 'sistema',
+                        vendedor: 'oauth_callback',
+                        tipo: 'coexistencia_token',
+                        created_at: new Date().toISOString()
+                });
+
+                return res.send(`
+                        <h2>✅ Coexistência configurada com sucesso!</h2>
+                        <p>O número do Studio Rastro foi conectado à Cloud API.</p>
+                        <p>As mensagens agora serão salvas no CRM automaticamente.</p>
+                `);
+
+        } catch (err) {
+                console.error('❌ Erro ao trocar code por token:', err.response?.data || err.message);
+                return res.send(`<h2>❌ Erro ao processar: ${err.message}</h2>`);
+        }
+});
+
 // Rota de simulação para o CRM — usa o mesmo Groq/Gemini do bot
 app.post('/simulate', async (req, res) => {
         if (!checkAdminToken(req, res)) return;
@@ -1563,6 +1609,7 @@ async function enviarResumoDiario() {
                 await sendTemplate(NUMERO_GERENTE, 'resumo_diario_gerente');
                 await new Promise(r => setTimeout(r, 1500));
                 await sendWhatsApp(NUMERO_GERENTE, msg);
+                salvarMensagem(NUMERO_GERENTE, msg, 'sistema', 'bot', 'resumo_diario');
                 console.log(`📊 Resumo diário enviado para a gerente`);
         } catch (err) {
                 console.error('❌ Erro ao enviar resumo diário:', err.message);
@@ -1617,6 +1664,7 @@ function agendarLembreteEscala() {
                 console.log(`⏰ Lembrete de escala agendado em ${Math.round(ms / 60000)} minutos`);
                 setTimeout(() => {
                         sendTemplate(NUMERO_GERENTE, 'lembrete_escala', ['Leybian']);
+                        salvarMensagem(NUMERO_GERENTE, '[Template: lembrete_escala] Leybian', 'sistema', 'bot', 'lembrete_escala');
                         console.log(`🔔 Lembrete de escala enviado para a gerente`);
                         agendar(); // reagenda para a próxima sexta
                 }, ms);
@@ -1818,6 +1866,7 @@ async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
                 await new Promise(r => setTimeout(r, 1500));
                 const detalhe = `👤 *${primeiro.nome}*\n📞 ${primeiro.telefone}\n\nComo ficou? Responda: *matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`;
                 await sendWhatsApp(numeroVendedor, detalhe);
+                salvarMensagem(numeroVendedor, detalhe, 'sistema', nomeVendedor.toLowerCase(), 'alerta_vendedor');
                 console.log(`🔔 Alerta sequencial enviado para ${nomeVendedor}: ${leadsNovos.length} lead(s)`);
         } catch (err) {
                 console.error(`❌ Erro ao enviar alerta para ${nomeVendedor}:`, err.message);
@@ -2019,6 +2068,7 @@ Seja objetivo. Máximo 600 palavras no total.`;
                         await sendWhatsApp(NUMERO_GERENTE, bloco);
                         await new Promise(r => setTimeout(r, 1500)); // pausa entre mensagens
                 }
+                salvarMensagem(NUMERO_GERENTE, blocos.join('\n\n'), 'sistema', 'bot', 'relatorio_mensal');
 
                 console.log(`📋 Relatório mensal enviado (${blocos.length} mensagem(ns))`);
         } catch (err) {

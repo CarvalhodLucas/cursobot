@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../CRM-WHATSAPP"
+		}
+	],
+	"settings": {
+		"liveServer.settings.multiRootWorkspaceName": "CRM-WHATSAPP",
+		"liveServer.settings.port": 5501
+	}
+}
