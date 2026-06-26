@@ -827,6 +827,8 @@ app.post('/webhook', async (req, res) => {
                 telefone = String(message.from).replace(/\D/g, '');
                 mensagem = message.text?.body;
 
+                console.log(`📞 Webhook Meta recebido — phone_number_id: ${phoneNumberId}, de: ${telefone}`);
+
                 // ── Mensagem chegando no número de um VENDEDOR ───────────────
                 const vendedorPorPhoneId = {
                         [process.env.META_PHONE_NUMBER_ID_REBECCA]: 'Rebecca',
