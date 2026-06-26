@@ -819,6 +819,29 @@ app.post('/webhook', async (req, res) => {
         // ── Formato Meta Cloud API ────────────────────────────────────────────
         if (body.object === 'whatsapp_business_account') {
                 const value   = body.entry?.[0]?.changes?.[0]?.value;
+                const field   = body.entry?.[0]?.changes?.[0]?.field;
+
+                const vendedorPorPhoneId = {
+                        [process.env.META_PHONE_NUMBER_ID_REBECCA]: 'Rebecca',
+                        [process.env.META_PHONE_NUMBER_ID_PAULO]:   'Paulo',
+                        [process.env.META_PHONE_NUMBER_ID_TAYNARA]: 'Taynara',
+                };
+
+                // ── smb_message_echoes: mensagem ENVIADA pela vendedora no celular ──
+                if (field === 'smb_message_echoes') {
+                        const echo = value?.message_echoes?.[0];
+                        if (!echo || echo.type !== 'text') return;
+                        const phoneNumberId = value?.metadata?.phone_number_id;
+                        const vendedorDoNumero = vendedorPorPhoneId[phoneNumberId];
+                        if (!vendedorDoNumero) return;
+                        const telefonCliente = String(echo.to).replace(/\D/g, '');
+                        const textoMensagem  = echo.text?.body;
+                        await salvarMensagem(telefonCliente, textoMensagem, 'vendedor', vendedorDoNumero, 'conversa_vendedor');
+                        console.log(`📤 [${vendedorDoNumero}] vendedor → ${telefonCliente}: ${textoMensagem}`);
+                        return;
+                }
+
+                // ── messages: mensagem RECEBIDA no número da vendedora (cliente enviou) ──
                 console.log(`📞 Webhook Meta RAW — phone_number_id: ${value?.metadata?.phone_number_id}, hasMessages: ${!!value?.messages?.[0]}, type: ${value?.messages?.[0]?.type}`);
                 const message = value?.messages?.[0];
                 if (!message) return;                          // status update, ignorar
@@ -828,12 +851,6 @@ app.post('/webhook', async (req, res) => {
                 telefone = String(message.from).replace(/\D/g, '');
                 mensagem = message.text?.body;
 
-                // ── Mensagem chegando no número de um VENDEDOR ───────────────
-                const vendedorPorPhoneId = {
-                        [process.env.META_PHONE_NUMBER_ID_REBECCA]: 'Rebecca',
-                        [process.env.META_PHONE_NUMBER_ID_PAULO]:   'Paulo',
-                        [process.env.META_PHONE_NUMBER_ID_TAYNARA]: 'Taynara',
-                };
                 const vendedorDoNumero = vendedorPorPhoneId[phoneNumberId];
 
                 if (vendedorDoNumero) {
