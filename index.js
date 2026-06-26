@@ -819,6 +819,7 @@ app.post('/webhook', async (req, res) => {
         // ── Formato Meta Cloud API ────────────────────────────────────────────
         if (body.object === 'whatsapp_business_account') {
                 const value   = body.entry?.[0]?.changes?.[0]?.value;
+                console.log(`📞 Webhook Meta RAW — phone_number_id: ${value?.metadata?.phone_number_id}, hasMessages: ${!!value?.messages?.[0]}, type: ${value?.messages?.[0]?.type}`);
                 const message = value?.messages?.[0];
                 if (!message) return;                          // status update, ignorar
                 if (message.type !== 'text') return;           // só texto por enquanto
@@ -826,8 +827,6 @@ app.post('/webhook', async (req, res) => {
                 const phoneNumberId = value?.metadata?.phone_number_id;
                 telefone = String(message.from).replace(/\D/g, '');
                 mensagem = message.text?.body;
-
-                console.log(`📞 Webhook Meta recebido — phone_number_id: ${phoneNumberId}, de: ${telefone}`);
 
                 // ── Mensagem chegando no número de um VENDEDOR ───────────────
                 const vendedorPorPhoneId = {
