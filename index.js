@@ -576,9 +576,13 @@ async function sendTemplate(telefone, templateName, variables = []) {
                 }
         };
         if (variables.length > 0) {
+                // Suporta array de strings (legado) ou array de objetos {name, value} (nomeado)
+                const isNamed = typeof variables[0] === 'object' && variables[0] !== null && 'name' in variables[0];
                 body.template.components = [{
                         type: 'body',
-                        parameters: variables.map(v => ({ type: 'text', text: String(v || '—') }))
+                        parameters: isNamed
+                                ? variables.map(v => ({ type: 'text', parameter_name: v.name, text: String(v.value || '—') }))
+                                : variables.map(v => ({ type: 'text', text: String(v || '—') }))
                 }];
         }
         try {
@@ -615,9 +619,9 @@ async function notificarVendedor(telefone, vendedor) {
         const telefoneLimpo = String(telefone).replace(/\D/g, '');
 
         await sendTemplate(numeroVendedor, 'notificacao_novo_lead', [
-                dados.nome    || '—',
-                dados.turma   || '—',
-                dados.horario || '—',
+                { name: 'lead_nome',    value: dados.nome    || '—' },
+                { name: 'lead_turma',   value: dados.turma   || '—' },
+                { name: 'lead_horario', value: dados.horario || '—' },
                 `+${telefoneLimpo}`
         ]);
         console.log(`✅ Lead notificado para ${vendedor} (${numeroVendedor})`);
@@ -631,7 +635,7 @@ async function notificarCoordenacao(telefone) {
 
         const telefoneLimpo = String(telefone).replace(/\D/g, '');
 
-        await sendTemplate(NUMERO_COORDENACAO, 'alerta_coordenacao', [telefoneLimpo]);
+        await sendTemplate(NUMERO_COORDENACAO, 'alerta_coordenacao', [{ name: 'cliente_telefone', value: telefoneLimpo }]);
         console.log(`✅ Coordenação notificada para atender ${telefone}`);
 }
 
@@ -1472,10 +1476,10 @@ async function checkInatividade() {
                                 templateReeng = 'reengajamento_inicial';
                         } else if (dados.nome && (!dados.turma || !dados.horario)) {
                                 templateReeng = 'reengajamento_com_nome';
-                                varsReeng = [dados.nome];
+                                varsReeng = [{ name: 'lead_nome', value: dados.nome }];
                         } else if (dados.nome && dados.turma && dados.horario && !dados.confirmado) {
                                 templateReeng = 'reengajamento_confirmacao';
-                                varsReeng = [dados.nome];
+                                varsReeng = [{ name: 'lead_nome', value: dados.nome }];
                         }
 
                         if (templateReeng) {
@@ -1698,7 +1702,7 @@ function agendarLembreteEscala() {
                 const ms = msAteProximaSexta22UTC();
                 console.log(`⏰ Lembrete de escala agendado em ${Math.round(ms / 60000)} minutos`);
                 setTimeout(() => {
-                        sendTemplate(NUMERO_GERENTE, 'lembrete_escala', ['Leybian']);
+                        sendTemplate(NUMERO_GERENTE, 'lembrete_escala', [{ name: 'gerente_nome', value: 'Leybian' }]);
                         salvarMensagem(NUMERO_GERENTE, '[Template: lembrete_escala] Leybian', 'sistema', 'bot', 'lembrete_escala');
                         console.log(`🔔 Lembrete de escala enviado para a gerente`);
                         agendar(); // reagenda para a próxima sexta
@@ -1741,7 +1745,10 @@ async function checkLeadsPausados() {
                         if (!numeroVendedor) continue;
 
                         const nome = lead.nome || lead.telefone;
-                        await sendTemplate(numeroVendedor, 'lembrete_lead_pausado', [nome, lead.telefone]);
+                        await sendTemplate(numeroVendedor, 'lembrete_lead_pausado', [
+                                { name: 'lead_nome',     value: nome },
+                                { name: 'lead_telefone', value: lead.telefone }
+                        ]);
                         console.log(`🔔 Lembrete de lead pausado enviado: ${lead.telefone} → ${vendedor}`);
                 }
         } catch (err) {
@@ -1895,8 +1902,8 @@ async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
                 // Envia template para abrir janela de 24h + detalhes do primeiro lead
                 const primeiro = todos[0];
                 await sendTemplate(numeroVendedor, 'alerta_status_vendedor', [
-                        nomeVendedor,
-                        String(leadsNovos.length)
+                        { name: 'vendedor_nome',     value: nomeVendedor },
+                        { name: 'leads_quantidade',  value: String(leadsNovos.length) }
                 ]);
                 await new Promise(r => setTimeout(r, 1500));
                 const detalhe = `👤 *${primeiro.nome}*\n📞 ${primeiro.telefone}\n\nComo ficou? Responda: *matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`;
