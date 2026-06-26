@@ -818,13 +818,30 @@ app.post('/webhook', async (req, res) => {
 
         // ── Formato Meta Cloud API ────────────────────────────────────────────
         if (body.object === 'whatsapp_business_account') {
-                const message = body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+                const value   = body.entry?.[0]?.changes?.[0]?.value;
+                const message = value?.messages?.[0];
                 if (!message) return;                          // status update, ignorar
                 if (message.type !== 'text') return;           // só texto por enquanto
-                // Meta já envia número com código de país (ex: 5521..., 34618...)
-                // NÃO usar normalizePhone pois ela adicionaria 55 incorretamente
+
+                const phoneNumberId = value?.metadata?.phone_number_id;
                 telefone = String(message.from).replace(/\D/g, '');
                 mensagem = message.text?.body;
+
+                // ── Mensagem chegando no número de um VENDEDOR ───────────────
+                const vendedorPorPhoneId = {
+                        [process.env.META_PHONE_NUMBER_ID_REBECCA]: 'Rebecca',
+                        [process.env.META_PHONE_NUMBER_ID_PAULO]:   'Paulo',
+                        [process.env.META_PHONE_NUMBER_ID_TAYNARA]: 'Taynara',
+                };
+                const vendedorDoNumero = vendedorPorPhoneId[phoneNumberId];
+
+                if (vendedorDoNumero) {
+                        // Salva no Supabase como conversa do vendedor e encerra
+                        await salvarMensagem(telefone, mensagem, 'cliente', vendedorDoNumero, 'conversa_vendedor');
+                        console.log(`💬 [${vendedorDoNumero}] cliente ${telefone}: ${mensagem}`);
+                        return;
+                }
+                // ─────────────────────────────────────────────────────────────
 
         // ── Formato legado Z-API ──────────────────────────────────────────────
         } else {
