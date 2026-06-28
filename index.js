@@ -907,24 +907,62 @@ app.post('/webhook', async (req, res) => {
                 const lead = entrada.atual;
                 const nomeVendedorResposta = (telefone === numRebecca) ? 'Rebecca' : (telefone === numTaynara) ? 'Taynara' : 'Paulo';
 
-                // Normaliza a resposta para aceitar variações
+                // ── Aguardando motivo de perda/pausa ──
+                if (entrada.aguardandoMotivo) {
+                        const motivo = mensagem.trim();
+                        await supabase.from('status_de_leads')
+                                .upsert({
+                                        telefone: lead.telefone,
+                                        status: entrada.motivoStatus,
+                                        nome: lead.nome,
+                                        anotacao: motivo
+                                }, { onConflict: 'telefone' });
+
+                        entrada.aguardandoMotivo = false;
+                        entrada.motivoStatus = null;
+                        console.log(`📝 Motivo registrado por ${nomeVendedorResposta}: ${lead.telefone} → "${motivo}"`);
+
+                        let confirmacao = `📝 Motivo registrado para *${lead.nome || lead.telefone}*.`;
+                        if (entrada.fila.length > 0) {
+                                const proximo = entrada.fila.shift();
+                                pendentesAtualizacao[telefone].atual = proximo;
+                                const restam = entrada.fila.length + 1;
+                                confirmacao += `\n\n➡️ Próximo (${restam} restante${restam > 1 ? 's' : ''}):\n`;
+                                confirmacao += `👤 *${proximo.nome || 'sem nome'}*\n📞 ${proximo.telefone}\n\n`;
+                                confirmacao += `Como ficou? Responda: *matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`;
+                        } else {
+                                delete pendentesAtualizacao[telefone];
+                                confirmacao += `\n\n🎉 Todos os leads atualizados! Obrigado, ${nomeVendedorResposta}!`;
+                        }
+                        await sendWhatsApp(telefone, confirmacao);
+                        return;
+                }
+
+                // ── Resposta de status ──
                 const statusRaw = mensagem.trim().toLowerCase()
-                        .replace('em andamento', 'em_andamento')
-                        .replace('emandamento', 'em_andamento')
-                        .replace('matriculado', 'matriculado')
-                        .replace('perdido', 'perdido')
-                        .replace('pausado', 'pausado')
-                        .replace('aluno', 'aluno');
+                        .replace(/em\s*andamento/g, 'em_andamento')
+                        .replace('emandamento', 'em_andamento');
 
                 const statusValidos = ['em_andamento', 'matriculado', 'perdido', 'pausado', 'aluno'];
 
                 if (statusValidos.includes(statusRaw)) {
-                        // Atualiza no Supabase
+                        // Atualiza no Supabase (sem sobrescrever anotacao ainda)
                         await supabase.from('status_de_leads')
                                 .upsert({ telefone: lead.telefone, status: statusRaw, nome: lead.nome },
                                          { onConflict: 'telefone' });
 
                         const labelStatus = statusRaw.replace('em_andamento', 'Em Andamento').replace(/^\w/, c => c.toUpperCase());
+                        console.log(`✅ Status por ${nomeVendedorResposta}: ${lead.telefone} → ${statusRaw}`);
+
+                        // Se perdido ou pausado → pede o motivo antes de avançar
+                        if (statusRaw === 'perdido' || statusRaw === 'pausado') {
+                                pendentesAtualizacao[telefone].aguardandoMotivo = true;
+                                pendentesAtualizacao[telefone].motivoStatus = statusRaw;
+                                await sendWhatsApp(telefone,
+                                        `✅ *${lead.nome || lead.telefone}* → *${labelStatus}*\n\n❓ Qual foi o motivo? Responda livremente e registrarei no CRM.`);
+                                return;
+                        }
+
                         let confirmacao = `✅ *${lead.nome || lead.telefone}* → *${labelStatus}*`;
 
                         // Avança para o próximo da fila
@@ -941,7 +979,6 @@ app.post('/webhook', async (req, res) => {
                         }
 
                         await sendWhatsApp(telefone, confirmacao);
-                        console.log(`✅ Status por ${nomeVendedorResposta}: ${lead.telefone} → ${statusRaw}`);
                         return;
                 } else {
                         // Resposta inválida — repete a pergunta
@@ -1897,19 +1934,18 @@ async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
                 // Monta fila: primeiro lead vira "atual", o resto fica na fila
                 const todos = leadsNovos.map(l => ({ telefone: l.telefone, nome: l.nome || 'sem nome' }));
                 const numNorm = normalizePhone(numeroVendedor);
-                pendentesAtualizacao[numNorm] = { atual: todos[0], fila: todos.slice(1) };
+                pendentesAtualizacao[numNorm] = { atual: todos[0], fila: todos.slice(1), aguardandoMotivo: false, motivoStatus: null };
 
-                // Envia template para abrir janela de 24h + detalhes do primeiro lead
+                // Envia template por lead (abre janela de 24h e já mostra o lead)
                 const primeiro = todos[0];
-                await sendTemplate(numeroVendedor, 'alerta_status_vendedor', [
-                        { name: 'vendedor_nome',     value: nomeVendedor },
-                        { name: 'leads_quantidade',  value: String(leadsNovos.length) }
+                await sendTemplate(numeroVendedor, 'atualizar_status_lead', [
+                        { name: 'vendedor_nome',  value: nomeVendedor },
+                        { name: 'lead_nome',      value: primeiro.nome },
+                        { name: 'lead_telefone',  value: primeiro.telefone },
+                        { name: 'total_leads',    value: String(leadsNovos.length) }
                 ]);
-                await new Promise(r => setTimeout(r, 1500));
-                const detalhe = `👤 *${primeiro.nome}*\n📞 ${primeiro.telefone}\n\nComo ficou? Responda: *matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`;
-                await sendWhatsApp(numeroVendedor, detalhe);
-                salvarMensagem(numeroVendedor, detalhe, 'sistema', nomeVendedor.toLowerCase(), 'alerta_vendedor');
-                console.log(`🔔 Alerta sequencial enviado para ${nomeVendedor}: ${leadsNovos.length} lead(s)`);
+                salvarMensagem(numeroVendedor, `[Template: atualizar_status_lead] ${primeiro.nome} (${primeiro.telefone})`, 'sistema', nomeVendedor.toLowerCase(), 'alerta_vendedor');
+                console.log(`🔔 Alerta de status enviado para ${nomeVendedor}: ${leadsNovos.length} lead(s)`);
         } catch (err) {
                 console.error(`❌ Erro ao enviar alerta para ${nomeVendedor}:`, err.message);
         }
