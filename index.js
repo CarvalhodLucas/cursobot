@@ -562,9 +562,23 @@ async function sendWhatsApp(telefone, mensagem) {
         });
 }
 
+// Resolve qual phone_number_id usar baseado no número de destino
+function resolvePhoneNumberId(telefoneDestino) {
+        const dest = String(telefoneDestino).replace(/\D/g, '');
+        if (process.env.NUMERO_REBECCA && dest === String(process.env.NUMERO_REBECCA).replace(/\D/g, ''))
+                return process.env.META_PHONE_NUMBER_ID_REBECCA || process.env.META_PHONE_NUMBER_ID;
+        if (process.env.NUMERO_PAULO && dest === String(process.env.NUMERO_PAULO).replace(/\D/g, ''))
+                return process.env.META_PHONE_NUMBER_ID_PAULO || process.env.META_PHONE_NUMBER_ID;
+        if (process.env.NUMERO_TAYNARA && dest === String(process.env.NUMERO_TAYNARA).replace(/\D/g, ''))
+                return process.env.META_PHONE_NUMBER_ID_TAYNARA || process.env.META_PHONE_NUMBER_ID;
+        if (process.env.NUMERO_GERENTE && dest === String(process.env.NUMERO_GERENTE).replace(/\D/g, ''))
+                return process.env.META_PHONE_NUMBER_ID || process.env.META_PHONE_NUMBER_ID;
+        return process.env.META_PHONE_NUMBER_ID;
+}
+
 async function sendTemplate(telefone, templateName, variables = []) {
         const phoneLimpo = String(telefone).replace(/\D/g, '');
-        const phoneNumberId = process.env.META_PHONE_NUMBER_ID;
+        const phoneNumberId = resolvePhoneNumberId(phoneLimpo);
         const accessToken   = process.env.META_ACCESS_TOKEN;
         const body = {
                 messaging_product: 'whatsapp',
@@ -577,12 +591,15 @@ async function sendTemplate(telefone, templateName, variables = []) {
         };
         if (variables.length > 0) {
                 // Suporta array de strings (legado) ou array de objetos {name, value} (nomeado)
-                const isNamed = typeof variables[0] === 'object' && variables[0] !== null && 'name' in variables[0];
+                // Filtra apenas elementos válidos (objetos com name/value ou strings)
+                const validVars = variables.filter(v => v !== null && v !== undefined);
+                const isNamed = typeof validVars[0] === 'object' && 'name' in validVars[0];
                 body.template.components = [{
                         type: 'body',
                         parameters: isNamed
-                                ? variables.map(v => ({ type: 'text', parameter_name: v.name, text: String(v.value || '—') }))
-                                : variables.map(v => ({ type: 'text', text: String(v || '—') }))
+                                ? validVars.filter(v => typeof v === 'object' && 'name' in v)
+                                          .map(v => ({ type: 'text', parameter_name: v.name, text: String(v.value || '—') }))
+                                : validVars.map(v => ({ type: 'text', text: String(v || '—') }))
                 }];
         }
         try {
@@ -591,7 +608,7 @@ async function sendTemplate(telefone, templateName, variables = []) {
                         body,
                         { headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
                 );
-                console.log(`📨 Template "${templateName}" enviado para ${phoneLimpo}`);
+                console.log(`📨 Template "${templateName}" enviado para ${phoneLimpo} via phone_id ${phoneNumberId}`);
         } catch (err) {
                 console.error(`❌ Erro ao enviar template "${templateName}":`, err.response?.data || err.message);
                 throw err;
@@ -619,10 +636,10 @@ async function notificarVendedor(telefone, vendedor) {
         const telefoneLimpo = String(telefone).replace(/\D/g, '');
 
         await sendTemplate(numeroVendedor, 'notificacao_novo_lead', [
-                { name: 'lead_nome',    value: dados.nome    || '—' },
-                { name: 'lead_turma',   value: dados.turma   || '—' },
-                { name: 'lead_horario', value: dados.horario || '—' },
-                `+${telefoneLimpo}`
+                { name: 'lead_nome',      value: dados.nome    || '—' },
+                { name: 'lead_turma',     value: dados.turma   || '—' },
+                { name: 'lead_horario',   value: dados.horario || '—' },
+                { name: 'lead_telefone',  value: `+${telefoneLimpo}` }
         ]);
         console.log(`✅ Lead notificado para ${vendedor} (${numeroVendedor})`);
 }
@@ -907,9 +924,15 @@ app.post('/webhook', async (req, res) => {
                 const lead = entrada.atual;
                 const nomeVendedorResposta = (telefone === numRebecca) ? 'Rebecca' : (telefone === numTaynara) ? 'Taynara' : 'Paulo';
 
+                const nomeVendLower = nomeVendedorResposta.toLowerCase();
+
                 // ── Aguardando motivo de perda/pausa ──
                 if (entrada.aguardandoMotivo) {
                         const motivo = mensagem.trim();
+
+                        // Salva resposta do vendedor na conversa
+                        await salvarMensagem(telefone, motivo, 'vendedor', nomeVendLower, 'resposta_vendedor');
+
                         await supabase.from('status_de_leads')
                                 .upsert({
                                         telefone: lead.telefone,
@@ -935,6 +958,7 @@ app.post('/webhook', async (req, res) => {
                                 confirmacao += `\n\n🎉 Todos os leads atualizados! Obrigado, ${nomeVendedorResposta}!`;
                         }
                         await sendWhatsApp(telefone, confirmacao);
+                        await salvarMensagem(telefone, confirmacao, 'sistema', nomeVendLower, 'alerta_vendedor');
                         return;
                 }
 
@@ -946,7 +970,9 @@ app.post('/webhook', async (req, res) => {
                 const statusValidos = ['em_andamento', 'matriculado', 'perdido', 'pausado', 'aluno'];
 
                 if (statusValidos.includes(statusRaw)) {
-                        // Atualiza no Supabase (sem sobrescrever anotacao ainda)
+                        // Salva resposta do vendedor na conversa
+                        await salvarMensagem(telefone, mensagem.trim(), 'vendedor', nomeVendLower, 'resposta_vendedor');
+
                         await supabase.from('status_de_leads')
                                 .upsert({ telefone: lead.telefone, status: statusRaw, nome: lead.nome },
                                          { onConflict: 'telefone' });
@@ -958,8 +984,9 @@ app.post('/webhook', async (req, res) => {
                         if (statusRaw === 'perdido' || statusRaw === 'pausado') {
                                 pendentesAtualizacao[telefone].aguardandoMotivo = true;
                                 pendentesAtualizacao[telefone].motivoStatus = statusRaw;
-                                await sendWhatsApp(telefone,
-                                        `✅ *${lead.nome || lead.telefone}* → *${labelStatus}*\n\n❓ Qual foi o motivo? Responda livremente e registrarei no CRM.`);
+                                const pergunta = `✅ *${lead.nome || lead.telefone}* → *${labelStatus}*\n\n❓ Qual foi o motivo? Responda livremente e registrarei no CRM.`;
+                                await sendWhatsApp(telefone, pergunta);
+                                await salvarMensagem(telefone, pergunta, 'sistema', nomeVendLower, 'alerta_vendedor');
                                 return;
                         }
 
@@ -979,6 +1006,7 @@ app.post('/webhook', async (req, res) => {
                         }
 
                         await sendWhatsApp(telefone, confirmacao);
+                        await salvarMensagem(telefone, confirmacao, 'sistema', nomeVendLower, 'alerta_vendedor');
                         return;
                 } else {
                         // Resposta inválida — repete a pergunta
