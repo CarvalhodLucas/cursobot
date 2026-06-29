@@ -110,17 +110,31 @@ async function getVendedor() {
         const ehSabado = dia === 6;
         const ehPar = diaDoProjeto % 2 === 0;
 
+        // Sábado: ignora hora — qualquer lead que chegar no sábado vai para o vendedor da escala de sábado
+        if (ehSabado) {
+                const sabadoMatches = escala.filter(e => {
+                        if (e.dia_semana !== 6) return false;
+                        if (e.sabado_paridade && e.sabado_paridade !== 'sempre') {
+                                if (e.sabado_paridade === 'par' && !ehPar) return false;
+                                if (e.sabado_paridade === 'impar' && ehPar) return false;
+                        }
+                        return true;
+                });
+                if (sabadoMatches.length > 0) {
+                        console.log(`📅 Sábado → ${sabadoMatches[0].vendedor} (paridade: ${sabadoMatches[0].sabado_paridade || 'sempre'})`);
+                        return sabadoMatches[0].vendedor;
+                }
+                // Sem vendedor escalado para este sábado → fallback
+                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebecca' : ultimoVendedorFallback === 'Rebecca' ? 'Taynara' : 'Paulo';
+                console.log(`⚠️ Nenhum vendedor para sábado (paridade). Fallback: ${ultimoVendedorFallback}`);
+                return ultimoVendedorFallback;
+        }
+
         // Usamos uma pequena margem para evitar problemas de precisão com floats
         const matches = escala.filter(e => {
                 const diaMatch = e.dia_semana === dia;
                 const horaMatch = hora >= (e.hora_inicio - 0.02) && hora < (e.hora_fim + 0.02);
                 if (!diaMatch || !horaMatch) return false;
-
-                // Filtra por paridade do sábado quando configurado
-                if (ehSabado && e.sabado_paridade && e.sabado_paridade !== 'sempre') {
-                        if (e.sabado_paridade === 'par' && !ehPar) return false;
-                        if (e.sabado_paridade === 'impar' && ehPar) return false;
-                }
                 return true;
         });
 
@@ -1540,6 +1554,7 @@ async function checkInatividade() {
                         // Dados do lead não estão na memória → usa template inicial (sem variáveis)
                         console.log(`⏳ Reengajamento (fallback DB) disparado para ${tel}`);
                         sendTemplate(tel, 'reengajamento_inicial', []);
+                        salvarMensagem(tel, '[Template: reengajamento_inicial]', 'bot', null, 'reengajamento');
                         reengajamentoEnviado[tel] = true;
                         ultimaAtividade[tel] = new Date(estado.ultima_atividade).getTime();
                         salvarEstadoBot(tel);
@@ -1600,6 +1615,8 @@ async function checkInatividade() {
                         if (templateReeng) {
                                 console.log(`⏳ Reengajamento disparado para ${telefone} (${templateReeng})`);
                                 sendTemplate(telefone, templateReeng, varsReeng);
+                                const varStr = varsReeng.length > 0 ? varsReeng.map(v => v.value || v).join(' ') : '';
+                                salvarMensagem(telefone, `[Template: ${templateReeng}]${varStr ? ' ' + varStr : ''}`, 'bot', null, 'reengajamento');
                                 reengajamentoEnviado[telefone] = true;
                                 salvarEstadoBot(telefone);
                         }
