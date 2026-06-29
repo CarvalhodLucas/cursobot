@@ -1504,6 +1504,53 @@ function salvarEstadoBot(telefone) {
 // Reengajamento após 24h de inatividade
 async function checkInatividade() {
         const agora = Date.now();
+
+        // ── Fallback DB: pega telefones que saíram da memória (ex: após restart) ──
+        try {
+                const limite24h = new Date(agora - 24 * 60 * 60 * 1000).toISOString();
+                const { data: estadosAntigos } = await supabase
+                        .from('estado_bot')
+                        .select('telefone, ultima_atividade, reengajamento_env')
+                        .lte('ultima_atividade', limite24h)
+                        .eq('reengajamento_env', false);
+
+                for (const estado of (estadosAntigos || [])) {
+                        const tel = estado.telefone;
+                        if (ultimaAtividade[tel]) continue; // já será tratado abaixo
+                        if (reengajamentoEnviado[tel]) continue;
+
+                        // Checa se conversa já foi encerrada
+                        const { data: historico } = await supabase
+                                .from('conversas')
+                                .select('tipo')
+                                .eq('telefone', tel)
+                                .order('created_at', { ascending: false })
+                                .limit(10);
+
+                        const tipos = (historico || []).map(r => r.tipo);
+                        const jaEncerrado = tipos.some(t =>
+                                ['aluno','lead_confirmado','lead-vendedor','conversa_vendedor'].includes(t)
+                        );
+                        if (jaEncerrado) {
+                                reengajamentoEnviado[tel] = true;
+                                salvarEstadoBot(tel);
+                                continue;
+                        }
+
+                        // Dados do lead não estão na memória → usa template inicial (sem variáveis)
+                        console.log(`⏳ Reengajamento (fallback DB) disparado para ${tel}`);
+                        sendTemplate(tel, 'reengajamento_inicial', []);
+                        reengajamentoEnviado[tel] = true;
+                        ultimaAtividade[tel] = new Date(estado.ultima_atividade).getTime();
+                        salvarEstadoBot(tel);
+
+                        await new Promise(r => setTimeout(r, 2000)); // pausa entre envios
+                }
+        } catch (e) {
+                console.error('Erro no checkInatividade fallback DB:', e.message);
+        }
+
+        // ── Check principal: telefones em memória ────────────────────────────────
         for (const telefone in ultimaAtividade) {
                 if (agora - ultimaAtividade[telefone] > 24 * 60 * 60 * 1000 && !reengajamentoEnviado[telefone]) {
                         // Consulta o banco para ver se essa conversa já foi encerrada/encaminhada
