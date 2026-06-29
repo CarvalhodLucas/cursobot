@@ -578,7 +578,10 @@ function resolvePhoneNumberId(telefoneDestino) {
 
 async function sendTemplate(telefone, templateName, variables = []) {
         const phoneLimpo = String(telefone).replace(/\D/g, '');
-        const phoneNumberId = resolvePhoneNumberId(phoneLimpo);
+        // Sempre usa o número principal do bot como remetente.
+        // resolvePhoneNumberId era usado para enviar por números de vendedores,
+        // mas esses são gerenciados pelo WANotifier (token diferente) — não funcionaria.
+        const phoneNumberId = process.env.META_PHONE_NUMBER_ID;
         const accessToken   = process.env.META_ACCESS_TOKEN;
         const body = {
                 messaging_product: 'whatsapp',
@@ -1360,13 +1363,13 @@ app.get('/buscar/:telefone', async (req, res) => {
 app.get('/classificar-antigos', async (req, res) => {
         if (!checkAdminToken(req, res)) return;
 
-        const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+        const limite30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
-        // 1. Telefones com atividade RECENTE (menos de 15 dias)
+        // 1. Telefones com atividade RECENTE (menos de 30 dias)
         const { data: recentes, error: errRec } = await supabase
                 .from('conversas')
                 .select('telefone')
-                .gte('created_at', limite15d);
+                .gte('created_at', limite30d);
         if (errRec) return res.status(500).json({ ok: false, msg: errRec.message });
         const telefonesRecentes = new Set((recentes || []).map(c => c.telefone));
 
@@ -1379,9 +1382,9 @@ app.get('/classificar-antigos', async (req, res) => {
 
         const todosTelefones = [...new Set((todosConversas || []).map(c => c.telefone))];
 
-        // 3. Inativos = sem nenhuma conversa nos últimos 15 dias
+        // 3. Inativos = sem nenhuma conversa nos últimos 30 dias
         const inativos = todosTelefones.filter(t => !telefonesRecentes.has(t));
-        if (!inativos.length) return res.json({ ok: true, msg: 'Nenhum lead inativo há mais de 15 dias.', total: 0 });
+        if (!inativos.length) return res.json({ ok: true, msg: 'Nenhum lead inativo há mais de 30 dias.', total: 0 });
 
         // 4. Dos inativos, pega só os sem status ou com status "novo"
         const { data: comStatus } = await supabase
@@ -1868,19 +1871,19 @@ async function classificarLeadIA(conversaTexto) {
         }
 }
 
-// ── Classifica automaticamente leads com mais de 15 dias sem atividade ───────
+// ── Classifica automaticamente leads com mais de 30 dias sem atividade ───────
 async function classificarLeadsAntigos() {
-        const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+        const limite30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
         // Usa ultimo_contato da leads_resumo (data real da última mensagem)
         // em vez de updated_at do status_de_leads (que muda a cada upsert)
         const { data: leadsAntigos } = await supabase
                 .from('leads_resumo')
                 .select('telefone, vendedor, ultimo_contato')
-                .lte('ultimo_contato', limite15d);
+                .lte('ultimo_contato', limite30d);
 
         if (!leadsAntigos || leadsAntigos.length === 0) {
-                console.log('✅ Nenhum lead com último contato >15d');
+                console.log('✅ Nenhum lead com último contato >30d');
                 return;
         }
 
@@ -1895,11 +1898,11 @@ async function classificarLeadsAntigos() {
         const leads = statusNovos || [];
 
         if (leads.length === 0) {
-                console.log('✅ Nenhum lead antigo (>15d) com status "novo" para classificar');
+                console.log('✅ Nenhum lead antigo (>30d) com status "novo" para classificar');
                 return;
         }
 
-        console.log(`🤖 Classificando ${leads.length} lead(s) com mais de 15 dias...`);
+        console.log(`🤖 Classificando ${leads.length} lead(s) com mais de 30 dias...`);
         const contagem = { perdido: 0, pausado: 0, em_andamento: 0, erro: 0 };
 
         for (const lead of leads) {
