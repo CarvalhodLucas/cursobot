@@ -943,44 +943,17 @@ app.post('/webhook', async (req, res) => {
 
                 const nomeVendLower = nomeVendedorResposta.toLowerCase();
 
-                // ── Aguardando motivo de perda/pausa ──
-                if (entrada.aguardandoMotivo) {
-                        const motivo = mensagem.trim();
+                // ── Resposta de status (aceita "perdido – motivo" na mesma mensagem) ──
+                // Normaliza separadores: "–", "-", "—", ":"
+                const respostaNorm = mensagem.trim()
+                        .replace(/[–—]/g, '-')
+                        .replace(/\s*:\s*/, ' - ');
 
-                        // Salva resposta do vendedor na conversa
-                        await salvarMensagem(telefone, motivo, 'vendedor', nomeVendLower, 'resposta_vendedor');
+                // Extrai parte do status (antes do traço) e motivo (depois)
+                const [parteStatus, ...partesMotivo] = respostaNorm.split(/\s*-\s*/);
+                const motivoInline = partesMotivo.join(' - ').trim() || null;
 
-                        await supabase.from('status_de_leads')
-                                .upsert({
-                                        telefone: lead.telefone,
-                                        status: entrada.motivoStatus,
-                                        nome: lead.nome,
-                                        anotacao: motivo
-                                }, { onConflict: 'telefone' });
-
-                        entrada.aguardandoMotivo = false;
-                        entrada.motivoStatus = null;
-                        console.log(`📝 Motivo registrado por ${nomeVendedorResposta}: ${lead.telefone} → "${motivo}"`);
-
-                        let confirmacao = `📝 Motivo registrado para *${lead.nome || lead.telefone}*.`;
-                        if (entrada.fila.length > 0) {
-                                const proximo = entrada.fila.shift();
-                                pendentesAtualizacao[telefone].atual = proximo;
-                                const restam = entrada.fila.length + 1;
-                                confirmacao += `\n\n➡️ Próximo (${restam} restante${restam > 1 ? 's' : ''}):\n`;
-                                confirmacao += `👤 *${proximo.nome || 'sem nome'}*\n📞 ${proximo.telefone}\n\n`;
-                                confirmacao += `Como ficou? Responda: *matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`;
-                        } else {
-                                delete pendentesAtualizacao[telefone];
-                                confirmacao += `\n\n🎉 Todos os leads atualizados! Obrigado, ${nomeVendedorResposta}!`;
-                        }
-                        await sendWhatsApp(telefone, confirmacao);
-                        await salvarMensagem(telefone, confirmacao, 'sistema', nomeVendLower, 'alerta_vendedor');
-                        return;
-                }
-
-                // ── Resposta de status ──
-                const statusRaw = mensagem.trim().toLowerCase()
+                const statusRaw = parteStatus.trim().toLowerCase()
                         .replace(/em\s*andamento/g, 'em_andamento')
                         .replace('emandamento', 'em_andamento');
 
@@ -990,24 +963,56 @@ app.post('/webhook', async (req, res) => {
                         // Salva resposta do vendedor na conversa
                         await salvarMensagem(telefone, mensagem.trim(), 'vendedor', nomeVendLower, 'resposta_vendedor');
 
+                        const upsertData = { telefone: lead.telefone, status: statusRaw, nome: lead.nome };
+                        if (motivoInline) upsertData.anotacao = motivoInline;
+
                         await supabase.from('status_de_leads')
-                                .upsert({ telefone: lead.telefone, status: statusRaw, nome: lead.nome },
-                                         { onConflict: 'telefone' });
+                                .upsert(upsertData, { onConflict: 'telefone' });
 
                         const labelStatus = statusRaw.replace('em_andamento', 'Em Andamento').replace(/^\w/, c => c.toUpperCase());
-                        console.log(`✅ Status por ${nomeVendedorResposta}: ${lead.telefone} → ${statusRaw}`);
+                        if (motivoInline) {
+                                console.log(`✅ Status por ${nomeVendedorResposta}: ${lead.telefone} → ${statusRaw} ("${motivoInline}")`);
+                        } else {
+                                console.log(`✅ Status por ${nomeVendedorResposta}: ${lead.telefone} → ${statusRaw}`);
+                        }
 
-                        // Se perdido ou pausado → pede o motivo antes de avançar
-                        if (statusRaw === 'perdido' || statusRaw === 'pausado') {
+                        // Se perdido/pausado sem motivo → pede o motivo (fallback para quem não leu o template)
+                        if ((statusRaw === 'perdido' || statusRaw === 'pausado') && !motivoInline) {
                                 pendentesAtualizacao[telefone].aguardandoMotivo = true;
                                 pendentesAtualizacao[telefone].motivoStatus = statusRaw;
-                                const pergunta = `✅ *${lead.nome || lead.telefone}* → *${labelStatus}*\n\n❓ Qual foi o motivo? Responda livremente e registrarei no CRM.`;
+                                const pergunta = `✅ *${lead.nome || lead.telefone}* → *${labelStatus}*\n\n❓ Qual foi o motivo? Responda livremente.`;
                                 await sendWhatsApp(telefone, pergunta);
                                 await salvarMensagem(telefone, pergunta, 'sistema', nomeVendLower, 'alerta_vendedor');
                                 return;
                         }
 
-                        let confirmacao = `✅ *${lead.nome || lead.telefone}* → *${labelStatus}*`;
+                        // ── Aguardando motivo de perda/pausa (fallback – segunda mensagem) ──
+                        if (entrada.aguardandoMotivo) {
+                                const motivo = mensagem.trim();
+                                await salvarMensagem(telefone, motivo, 'vendedor', nomeVendLower, 'resposta_vendedor');
+                                await supabase.from('status_de_leads')
+                                        .upsert({ telefone: lead.telefone, status: entrada.motivoStatus, nome: lead.nome, anotacao: motivo }, { onConflict: 'telefone' });
+                                entrada.aguardandoMotivo = false;
+                                entrada.motivoStatus = null;
+                                console.log(`📝 Motivo (2ª msg) por ${nomeVendedorResposta}: ${lead.telefone} → "${motivo}"`);
+                                let confirmacaoMotivo = `📝 Motivo registrado para *${lead.nome || lead.telefone}*.`;
+                                if (entrada.fila.length > 0) {
+                                        const proximo = entrada.fila.shift();
+                                        pendentesAtualizacao[telefone].atual = proximo;
+                                        const restam = entrada.fila.length + 1;
+                                        confirmacaoMotivo += `\n\n➡️ Próximo (${restam} restante${restam > 1 ? 's' : ''}):\n`;
+                                        confirmacaoMotivo += `👤 *${proximo.nome || 'sem nome'}*\n📞 ${proximo.telefone}\n\n`;
+                                        confirmacaoMotivo += `Como ficou? Responda com status e motivo se perdido/pausado.`;
+                                } else {
+                                        delete pendentesAtualizacao[telefone];
+                                        confirmacaoMotivo += `\n\n🎉 Todos os leads atualizados! Obrigado, ${nomeVendedorResposta}!`;
+                                }
+                                await sendWhatsApp(telefone, confirmacaoMotivo);
+                                await salvarMensagem(telefone, confirmacaoMotivo, 'sistema', nomeVendLower, 'alerta_vendedor');
+                                return;
+                        }
+
+                        let confirmacao = `✅ *${lead.nome || lead.telefone}* → *${labelStatus}*${motivoInline ? `\n📝 Motivo: ${motivoInline}` : ''}`;
 
                         // Avança para o próximo da fila
                         if (entrada.fila.length > 0) {
@@ -2009,20 +2014,48 @@ async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
         if (!numeroVendedor) return;
 
         try {
-                const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
+                // Janela: leads com último contato entre 7 e 30 dias atrás
+                // Menos de 7 dias → cedo demais para perguntar
+                // Mais de 30 dias → classificarLeadsAntigos já vai tratar como "perdido"
+                const limite7d  = new Date(Date.now() -  7 * 24 * 60 * 60 * 1000).toISOString();
+                const limite30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
-                // Apenas leads com status "novo" atualizados nos últimos 15 dias
-                const { data: leadsNovos } = await supabase
-                        .from('status_de_leads')
-                        .select('telefone, nome, status, vendedor')
+                // Busca leads do vendedor via leads_resumo (fonte correta do campo vendedor)
+                const { data: leadsDoVendedor } = await supabase
+                        .from('leads_resumo')
+                        .select('telefone, vendedor, ultimo_contato')
                         .ilike('vendedor', `%${nomeVendedor}%`)
-                        .eq('status', 'novo')
-                        .gte('updated_at', limite15d)          // ≤ 15 dias
-                        .order('updated_at', { ascending: true })
-                        .limit(20);
+                        .gte('ultimo_contato', limite30d)   // não mais antigo que 30 dias
+                        .lte('ultimo_contato', limite7d)    // sem contato há pelo menos 7 dias
+                        .eq('tem_msg_cliente', true)
+                        .order('ultimo_contato', { ascending: true })
+                        .limit(50);
 
-                if (!leadsNovos || leadsNovos.length === 0) {
-                        console.log(`✅ ${nomeVendedor}: nenhum lead "novo" recente para atualizar`);
+                if (!leadsDoVendedor || leadsDoVendedor.length === 0) {
+                        console.log(`✅ ${nomeVendedor}: nenhum lead recente`);
+                        return;
+                }
+
+                // Dos leads do vendedor, pega os que têm status "novo" ou sem status
+                const telefones = leadsDoVendedor.map(l => l.telefone);
+                const { data: statusExistentes } = await supabase
+                        .from('status_de_leads')
+                        .select('telefone, status, nome')
+                        .in('telefone', telefones);
+
+                const statusMap = {};
+                (statusExistentes || []).forEach(s => { statusMap[s.telefone] = s; });
+
+                // Inclui leads com status "novo" OU sem entrada em status_de_leads
+                const leadsNovos = leadsDoVendedor
+                        .filter(l => !statusMap[l.telefone] || statusMap[l.telefone].status === 'novo')
+                        .map(l => ({
+                                telefone: l.telefone,
+                                nome: statusMap[l.telefone]?.nome || 'sem nome'
+                        }));
+
+                if (leadsNovos.length === 0) {
+                        console.log(`✅ ${nomeVendedor}: nenhum lead "novo" para atualizar`);
                         return;
                 }
 
@@ -2033,11 +2066,11 @@ async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
 
                 // Envia template por lead (abre janela de 24h e já mostra o lead)
                 const primeiro = todos[0];
+                // Variáveis posicionais: {{1}} vendedor, {{2}} lead nome, {{3}} lead telefone
                 await sendTemplate(numeroVendedor, 'atualizar_status_lead', [
-                        { name: 'vendedor_nome',  value: nomeVendedor },
-                        { name: 'lead_nome',      value: primeiro.nome },
-                        { name: 'lead_telefone',  value: primeiro.telefone },
-                        { name: 'total_leads',    value: String(leadsNovos.length) }
+                        nomeVendedor,
+                        primeiro.nome || 'sem nome',
+                        primeiro.telefone
                 ]);
                 salvarMensagem(numeroVendedor, `[Template: atualizar_status_lead] ${primeiro.nome} (${primeiro.telefone})`, 'sistema', nomeVendedor.toLowerCase(), 'alerta_vendedor');
                 console.log(`🔔 Alerta de status enviado para ${nomeVendedor}: ${leadsNovos.length} lead(s)`);
