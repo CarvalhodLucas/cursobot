@@ -1512,19 +1512,38 @@ function salvarEstadoBot(telefone) {
 async function checkInatividade() {
         const agora = Date.now();
 
-        // ── Fallback DB: pega telefones que saíram da memória (ex: após restart) ──
+        // ── Fallback DB: busca direto em conversas — nao depende de estado_bot ──
         try {
-                const limite24h = new Date(agora - 24 * 60 * 60 * 1000).toISOString();
-                const { data: estadosAntigos } = await supabase
-                        .from('estado_bot')
-                        .select('telefone, ultima_atividade, reengajamento_env')
-                        .lte('ultima_atividade', limite24h)
-                        .eq('reengajamento_env', false);
+                const limite24h  = new Date(agora - 24 * 60 * 60 * 1000).toISOString();
+                const limite7d   = new Date(agora -  7 * 24 * 60 * 60 * 1000).toISOString();
 
-                for (const estado of (estadosAntigos || [])) {
-                        const tel = estado.telefone;
-                        if (ultimaAtividade[tel]) continue; // já será tratado abaixo
-                        if (reengajamentoEnviado[tel]) continue;
+                const { data: jaEnviados } = await supabase
+                        .from('conversas')
+                        .select('telefone')
+                        .eq('tipo', 'reengajamento')
+                        .gte('created_at', limite7d);
+                const jaEnviadosSet = new Set((jaEnviados || []).map(r => r.telefone));
+
+                const { data: conversasAntigas } = await supabase
+                        .from('conversas')
+                        .select('telefone, created_at')
+                        .eq('de', 'cliente')
+                        .lte('created_at', limite24h)
+                        .gte('created_at', limite7d)
+                        .order('created_at', { ascending: false });
+
+                const ultimaPorTel = {};
+                for (const r of (conversasAntigas || [])) {
+                        if (!ultimaPorTel[r.telefone]) ultimaPorTel[r.telefone] = r.created_at;
+                }
+
+                const candidatos = Object.keys(ultimaPorTel).filter(tel =>
+                        !ultimaAtividade[tel] &&
+                        !reengajamentoEnviado[tel] &&
+                        !jaEnviadosSet.has(tel)
+                );
+
+                for (const tel of candidatos) {
 
                         // Checa se conversa já foi encerrada
                         const { data: historico } = await supabase
@@ -1545,11 +1564,11 @@ async function checkInatividade() {
                         }
 
                         // Dados do lead não estão na memória → usa template inicial (sem variáveis)
-                        console.log(`⏳ Reengajamento (fallback DB) disparado para ${tel}`);
+                        console.log(`⏳ Reengajamento (fallback conversas) disparado para ${tel}`);
                         sendTemplate(tel, 'reengajamento_inicial', []);
                         salvarMensagem(tel, '[Template: reengajamento_inicial]', 'bot', null, 'reengajamento');
                         reengajamentoEnviado[tel] = true;
-                        ultimaAtividade[tel] = new Date(estado.ultima_atividade).getTime();
+                        ultimaAtividade[tel] = new Date(ultimaPorTel[tel]).getTime();
                         salvarEstadoBot(tel);
 
                         await new Promise(r => setTimeout(r, 2000)); // pausa entre envios
@@ -2287,6 +2306,24 @@ app.get('/reengajar/:telefone', async (req, res) => {
         }
 });
 
+
+// Rota para disparar reengajamento manualmente para um numero
+app.get('/reengajar/:telefone', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+        const tel = req.params.telefone.replace(/\D/g, '');
+        if (!tel) return res.status(400).json({ ok: false, msg: 'Telefone invalido' });
+        try {
+                await sendTemplate(tel, 'reengajamento_inicial', []);
+                await salvarMensagem(tel, '[Template: reengajamento_inicial]', 'bot', null, 'reengajamento');
+                reengajamentoEnviado[tel] = true;
+                ultimaAtividade[tel] = Date.now();
+                await salvarEstadoBot(tel);
+                console.log(`Reengajamento manual disparado para ${tel}`);
+                res.json({ ok: true, msg: `Reengajamento enviado para ${tel}` });
+        } catch (e) {
+                res.status(500).json({ ok: false, msg: e.message });
+        }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
