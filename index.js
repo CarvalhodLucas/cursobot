@@ -36,9 +36,6 @@ app.use((req, res, next) => {
         next();
 });
 
-const ZAPI_INSTANCE = process.env.ZAPI_INSTANCE;
-const ZAPI_TOKEN = process.env.ZAPI_TOKEN;
-const ZAPI_CLIENT_TOKEN = process.env.ZAPI_CLIENT_TOKEN;
 const NUMERO_COORDENACAO = process.env.NUMERO_COORDENACAO;
 const NUMERO_GERENTE = process.env.NUMERO_GERENTE;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -852,58 +849,49 @@ app.post('/webhook', async (req, res) => {
         res.sendStatus(200);
 
         const body = req.body;
+        if (body.object !== 'whatsapp_business_account') return;
+
         let telefone, mensagem;
+        const value   = body.entry?.[0]?.changes?.[0]?.value;
+        const field   = body.entry?.[0]?.changes?.[0]?.field;
 
-        // ── Formato Meta Cloud API ────────────────────────────────────────────
-        if (body.object === 'whatsapp_business_account') {
-                const value   = body.entry?.[0]?.changes?.[0]?.value;
-                const field   = body.entry?.[0]?.changes?.[0]?.field;
+        const vendedorPorPhoneId = {
+                [process.env.META_PHONE_NUMBER_ID_REBECCA]: 'Rebecca',
+                [process.env.META_PHONE_NUMBER_ID_PAULO]:   'Paulo',
+                [process.env.META_PHONE_NUMBER_ID_TAYNARA]: 'Taynara',
+        };
 
-                const vendedorPorPhoneId = {
-                        [process.env.META_PHONE_NUMBER_ID_REBECCA]: 'Rebecca',
-                        [process.env.META_PHONE_NUMBER_ID_PAULO]:   'Paulo',
-                        [process.env.META_PHONE_NUMBER_ID_TAYNARA]: 'Taynara',
-                };
-
-                // ── smb_message_echoes: mensagem ENVIADA pela vendedora no celular ──
-                if (field === 'smb_message_echoes') {
-                        const echo = value?.message_echoes?.[0];
-                        if (!echo || echo.type !== 'text') return;
-                        const phoneNumberId = value?.metadata?.phone_number_id;
-                        const vendedorDoNumero = vendedorPorPhoneId[phoneNumberId];
-                        if (!vendedorDoNumero) return;
-                        const telefonCliente = String(echo.to).replace(/\D/g, '');
-                        const textoMensagem  = echo.text?.body;
-                        await salvarMensagem(telefonCliente, textoMensagem, 'vendedor', vendedorDoNumero, 'conversa_vendedor');
-                        console.log(`📤 [${vendedorDoNumero}] vendedor → ${telefonCliente}: ${textoMensagem}`);
-                        return;
-                }
-
-                // ── messages: mensagem RECEBIDA no número da vendedora (cliente enviou) ──
-                console.log(`📞 Webhook Meta RAW — phone_number_id: ${value?.metadata?.phone_number_id}, hasMessages: ${!!value?.messages?.[0]}, type: ${value?.messages?.[0]?.type}`);
-                const message = value?.messages?.[0];
-                if (!message) return;                          // status update, ignorar
-                if (message.type !== 'text') return;           // só texto por enquanto
-
+        // ── smb_message_echoes: mensagem ENVIADA pela vendedora no celular ──
+        if (field === 'smb_message_echoes') {
+                const echo = value?.message_echoes?.[0];
+                if (!echo || echo.type !== 'text') return;
                 const phoneNumberId = value?.metadata?.phone_number_id;
-                telefone = String(message.from).replace(/\D/g, '');
-                mensagem = message.text?.body;
-
                 const vendedorDoNumero = vendedorPorPhoneId[phoneNumberId];
+                if (!vendedorDoNumero) return;
+                const telefonCliente = String(echo.to).replace(/\D/g, '');
+                const textoMensagem  = echo.text?.body;
+                await salvarMensagem(telefonCliente, textoMensagem, 'vendedor', vendedorDoNumero, 'conversa_vendedor');
+                console.log(`📤 [${vendedorDoNumero}] vendedor → ${telefonCliente}: ${textoMensagem}`);
+                return;
+        }
 
-                if (vendedorDoNumero) {
-                        // Salva no Supabase como conversa do vendedor e encerra
-                        await salvarMensagem(telefone, mensagem, 'cliente', vendedorDoNumero, 'conversa_vendedor');
-                        console.log(`💬 [${vendedorDoNumero}] cliente ${telefone}: ${mensagem}`);
-                        return;
-                }
-                // ─────────────────────────────────────────────────────────────
+        // ── messages: mensagem RECEBIDA no número da vendedora (cliente enviou) ──
+        console.log(`📞 Webhook Meta RAW — phone_number_id: ${value?.metadata?.phone_number_id}, hasMessages: ${!!value?.messages?.[0]}, type: ${value?.messages?.[0]?.type}`);
+        const message = value?.messages?.[0];
+        if (!message) return;                          // status update, ignorar
+        if (message.type !== 'text') return;           // só texto por enquanto
 
-        // ── Formato legado Z-API ──────────────────────────────────────────────
-        } else {
-                if (body.fromMe || body.isGroup) return;
-                telefone = normalizePhone(body.phone);
-                mensagem = body.text?.message || body.text || (typeof body.text === 'string' ? body.text : null);
+        const phoneNumberId = value?.metadata?.phone_number_id;
+        telefone = String(message.from).replace(/\D/g, '');
+        mensagem = message.text?.body;
+
+        const vendedorDoNumero = vendedorPorPhoneId[phoneNumberId];
+
+        if (vendedorDoNumero) {
+                // Salva no Supabase como conversa do vendedor e encerra
+                await salvarMensagem(telefone, mensagem, 'cliente', vendedorDoNumero, 'conversa_vendedor');
+                console.log(`💬 [${vendedorDoNumero}] cliente ${telefone}: ${mensagem}`);
+                return;
         }
 
         if (!telefone || !mensagem) return;
