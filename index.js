@@ -2269,6 +2269,24 @@ Seja objetivo. Máximo 600 palavras no total.`;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Rota para disparar reengajamento manualmente para um número
+app.get('/reengajar/:telefone', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+        const tel = req.params.telefone.replace(/\D/g, '');
+        if (!tel) return res.status(400).json({ ok: false, msg: 'Telefone inválido' });
+        try {
+                await sendTemplate(tel, 'reengajamento_inicial', []);
+                await salvarMensagem(tel, '[Template: reengajamento_inicial]', 'bot', null, 'reengajamento');
+                reengajamentoEnviado[tel] = true;
+                ultimaAtividade[tel] = Date.now();
+                await salvarEstadoBot(tel);
+                console.log(`📲 Reengajamento manual disparado para ${tel}`);
+                res.json({ ok: true, msg: `Reengajamento enviado para ${tel}` });
+        } catch (e) {
+                res.status(500).json({ ok: false, msg: e.message });
+        }
+});
+
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
