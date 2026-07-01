@@ -1760,12 +1760,11 @@ async function enviarResumoDiario() {
                 if (totalLeadsNovos === 0) msg += `  _Nenhum lead novo ontem._\n\n`;
 
                 msg += `📋 *Status geral dos leads:*\n`;
-                msg += `  • Novo: ${contStatus.novo}\n`;
+                msg += `  • Novo: ${contStatus.novo + totalSemStatus}\n`;
                 msg += `  • Em andamento: ${contStatus.em_andamento}\n`;
                 msg += `  • Matriculado: ${contStatus.matriculado}\n`;
                 msg += `  • Aluno: ${contStatus.aluno}\n`;
-                msg += `  • Perdido: ${contStatus.perdido}\n`;
-                msg += `  • Sem status: ${totalSemStatus}\n\n`;
+                msg += `  • Perdido: ${contStatus.perdido}\n\n`;
 
                 // Resumo por vendedor (sem status)
                 const vendedoresComPendencia = Object.entries(porVendedor).filter(([, d]) => d.semStatus > 0);
