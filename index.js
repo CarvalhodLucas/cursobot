@@ -1797,11 +1797,15 @@ async function enviarResumoDiario() {
                         }
                 }
 
-                await sendTemplate(NUMERO_GERENTE, 'resumo_diario_gerente');
-                await new Promise(r => setTimeout(r, 1500));
-                await sendWhatsApp(NUMERO_GERENTE, msg);
+                await sendTemplate(NUMERO_GERENTE, 'resumo_diario_util', [dataStr]);
+                await new Promise(r => setTimeout(r, 3000));
+                try {
+                        await sendWhatsApp(NUMERO_GERENTE, msg);
+                        console.log(`📊 Resumo diário enviado para a gerente`);
+                } catch (errMsg) {
+                        console.error(`❌ Falha ao enviar texto do resumo (provavel template Marketing bloqueando janela):`, errMsg.response?.data || errMsg.message);
+                }
                 salvarMensagem(NUMERO_GERENTE, msg, 'sistema', 'bot', 'resumo_diario');
-                console.log(`📊 Resumo diário enviado para a gerente`);
         } catch (err) {
                 console.error('❌ Erro ao enviar resumo diário:', err.message);
         }
