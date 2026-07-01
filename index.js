@@ -666,7 +666,7 @@ async function notificarCoordenacao(telefone) {
 
         const telefoneLimpo = String(telefone).replace(/\D/g, '');
 
-        await sendTemplate(NUMERO_COORDENACAO, 'alerta_coordenacao', [{ name: 'cliente_telefone', value: telefoneLimpo }]);
+        await sendTemplate(NUMERO_COORDENACAO, 'alerta_coordenacao', [telefoneLimpo]);
         console.log(`✅ Coordenação notificada para atender ${telefone}`);
 }
 
@@ -781,7 +781,9 @@ function detectarTipo(mensagem, reply) {
                 msgLower.includes('sou estudante') ||
                 msgLower.includes('tenho aula') ||
                 msgLower.includes('minha aula') ||
-                msgLower.includes('prova') ||
+                msgLower.includes('minha prova') ||
+                msgLower.includes('prova amanha') ||
+                msgLower.includes('prova amanhã') ||
                 msgLower.includes('falta') ||
                 replyLower.includes('coordenação')
         ) {
