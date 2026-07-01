@@ -1655,6 +1655,10 @@ async function enviarResumoDiario() {
                 const inicioISO = ontemInicio.toISOString();
                 const fimISO   = ontemFim.toISOString();
 
+                // Início do mês atual (00:00 BRT = 03:00 UTC)
+                const inicioMes = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth(), 1, 3, 0, 0));
+                const inicioMesISO = inicioMes.toISOString();
+
                 // Leads novos ontem — primeiro contato dentro do período
                 // Usa leads_resumo sem filtro de tipo (a view não tem campo tipo por mensagem)
                 const { data: leadsNovos } = await supabase
@@ -1664,16 +1668,18 @@ async function enviarResumoDiario() {
                         .lte('primeiro_contato', fimISO)
                         .eq('tem_msg_cliente', true);
 
-                // Todos os status cadastrados (visão geral)
-                const { data: todosStatus } = await supabase
+                // Status apenas dos leads do mês atual
+                // (primeiro buscamos os telefones do mês, depois filtramos os status)
+                const { data: todosStatusRaw } = await supabase
                         .from('status_de_leads')
                         .select('telefone, status, nome, updated_at');
 
-                // Todos os leads existentes para calcular sem status
+                // Leads do mês atual para o status geral
                 const { data: todosLeads } = await supabase
                         .from('leads_resumo')
                         .select('telefone, vendedor')
-                        .eq('tem_msg_cliente', true);
+                        .eq('tem_msg_cliente', true)
+                        .gte('primeiro_contato', inicioMesISO);
 
                 const totalLeadsNovos = leadsNovos?.length || 0;
 
@@ -1702,16 +1708,19 @@ async function enviarResumoDiario() {
                         leadsPorVendedor[v].push(l);
                 });
 
-                // Contagem por status (geral)
+                // Contagem por status — apenas leads do mês atual
+                const telefonesDoMes = new Set((todosLeads || []).map(l => l.telefone));
+                const todosStatus = (todosStatusRaw || []).filter(s => telefonesDoMes.has(s.telefone));
+
                 const contStatus = { novo: 0, em_andamento: 0, matriculado: 0, aluno: 0, perdido: 0 };
-                (todosStatus || []).forEach(s => {
+                todosStatus.forEach(s => {
                         if (contStatus[s.status] !== undefined) contStatus[s.status]++;
                 });
-                const comStatusSet = new Set((todosStatus || []).map(s => s.telefone));
+                const comStatusSet = new Set(todosStatus.map(s => s.telefone));
                 const totalSemStatus = (todosLeads || []).filter(l => !comStatusSet.has(l.telefone)).length;
 
                 // Status alterados ontem
-                const statusAlteradosOntem = (todosStatus || []).filter(s =>
+                const statusAlteradosOntem = todosStatus.filter(s =>
                         s.updated_at && s.updated_at >= inicioISO && s.updated_at <= fimISO
                 );
                 const alteradosPorStatus = { novo: [], em_andamento: [], matriculado: [], aluno: [], perdido: [] };
