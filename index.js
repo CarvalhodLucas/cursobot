@@ -1029,7 +1029,7 @@ app.post('/webhook', async (req, res) => {
 
         const jaConsentiu = await verificarConsentimento(telefone);
 
-        const vendedor = await getVendedorDoTelefone(telefone);
+        let vendedor = await getVendedorDoTelefone(telefone);
 
         if (!jaConsentiu) {
                 // Primeira mensagem do número — envia aviso de LGPD
