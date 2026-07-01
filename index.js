@@ -2180,6 +2180,8 @@ async function gerarRelatorioMensal() {
                                 conversasTexto += `[${m.de}]: ${m.mensagem.substring(0, 200)}\n`;
                         });
                 }
+                const total       = leadsDoMes?.length || 0;
+                const viaBot      = (leadsDoMes || []).filter(l => l.tem_msg_bot).length;
                 const contStatus  = { novo: 0, em_andamento: 0, matriculado: 0, aluno: 0, pausado: 0, perdido: 0, sem_status: 0 };
                 const comStatus   = new Set((todosStatus || []).map(s => s.telefone));
                 (leadsDoMes || []).forEach(l => {
