@@ -2307,31 +2307,15 @@ app.get('/reengajar/:telefone', async (req, res) => {
         const tel = req.params.telefone.replace(/\D/g, '');
         if (!tel) return res.status(400).json({ ok: false, msg: 'Telefone inválido' });
         try {
-                await sendTemplate(tel, 'reengajamento_inicial', []);
-                await salvarMensagem(tel, '[Template: reengajamento_inicial]', 'bot', null, 'reengajamento');
+                const dados = dadosLead[tel] || {};
+                const nomeLead = dados.nome ? `, ${dados.nome}` : '';
+                const msgReeng = `Oi${nomeLead}! 👋 Ainda posso te ajudar com informações sobre nossos cursos do CNA Recreio? 😊`;
+                await sendWhatsApp(tel, msgReeng);
+                await salvarMensagem(tel, msgReeng, 'bot', null, 'reengajamento');
                 reengajamentoEnviado[tel] = true;
                 ultimaAtividade[tel] = Date.now();
                 await salvarEstadoBot(tel);
                 console.log(`📲 Reengajamento manual disparado para ${tel}`);
-                res.json({ ok: true, msg: `Reengajamento enviado para ${tel}` });
-        } catch (e) {
-                res.status(500).json({ ok: false, msg: e.message });
-        }
-});
-
-
-// Rota para disparar reengajamento manualmente para um numero
-app.get('/reengajar/:telefone', async (req, res) => {
-        if (!checkAdminToken(req, res)) return;
-        const tel = req.params.telefone.replace(/\D/g, '');
-        if (!tel) return res.status(400).json({ ok: false, msg: 'Telefone invalido' });
-        try {
-                await sendTemplate(tel, 'reengajamento_inicial', []);
-                await salvarMensagem(tel, '[Template: reengajamento_inicial]', 'bot', null, 'reengajamento');
-                reengajamentoEnviado[tel] = true;
-                ultimaAtividade[tel] = Date.now();
-                await salvarEstadoBot(tel);
-                console.log(`Reengajamento manual disparado para ${tel}`);
                 res.json({ ok: true, msg: `Reengajamento enviado para ${tel}` });
         } catch (e) {
                 res.status(500).json({ ok: false, msg: e.message });
