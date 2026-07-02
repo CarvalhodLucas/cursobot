@@ -875,15 +875,27 @@ app.post('/webhook', async (req, res) => {
                 [process.env.META_PHONE_NUMBER_ID_TAYNARA]: 'Taynara',
         };
 
+        // Mensagens de mídia não são baixadas (ainda) — só registramos um indicativo
+        // de que algo chegou, pra aparecer no CRM. O conteúdo real só no celular.
+        const MIDIA_LABELS = {
+                image: '📷 Imagem recebida',
+                audio: '🎤 Áudio recebido',
+                video: '🎥 Vídeo recebido',
+                document: '📄 Documento recebido',
+                sticker: '🌟 Figurinha recebida',
+        };
+
         // ── smb_message_echoes: mensagem ENVIADA pela vendedora no celular ──
         if (field === 'smb_message_echoes') {
                 const echo = value?.message_echoes?.[0];
-                if (!echo || echo.type !== 'text') return;
+                if (!echo) return;
+                const echoEhMidia = echo.type !== 'text' && MIDIA_LABELS[echo.type];
+                if (echo.type !== 'text' && !echoEhMidia) return; // tipo não suportado, ignora
                 const phoneNumberId = value?.metadata?.phone_number_id;
                 const vendedorDoNumero = vendedorPorPhoneId[phoneNumberId];
                 if (!vendedorDoNumero) return;
                 const telefonCliente = String(echo.to).replace(/\D/g, '');
-                const textoMensagem  = echo.text?.body;
+                const textoMensagem  = echoEhMidia ? MIDIA_LABELS[echo.type] : echo.text?.body;
                 await salvarMensagem(telefonCliente, textoMensagem, 'vendedor', vendedorDoNumero, 'conversa_vendedor');
                 console.log(`📤 [${vendedorDoNumero}] vendedor → ${telefonCliente}: ${textoMensagem}`);
                 return;
@@ -893,11 +905,12 @@ app.post('/webhook', async (req, res) => {
         console.log(`📞 Webhook Meta RAW — phone_number_id: ${value?.metadata?.phone_number_id}, hasMessages: ${!!value?.messages?.[0]}, type: ${value?.messages?.[0]?.type}`);
         const message = value?.messages?.[0];
         if (!message) return;                          // status update, ignorar
-        if (message.type !== 'text') return;           // só texto por enquanto
+        const mensagemEhMidia = message.type !== 'text' && MIDIA_LABELS[message.type];
+        if (message.type !== 'text' && !mensagemEhMidia) return; // tipo não suportado, ignora
 
         const phoneNumberId = value?.metadata?.phone_number_id;
         telefone = String(message.from).replace(/\D/g, '');
-        mensagem = message.text?.body;
+        mensagem = mensagemEhMidia ? MIDIA_LABELS[message.type] : message.text?.body;
 
         const vendedorDoNumero = vendedorPorPhoneId[phoneNumberId];
 
@@ -905,6 +918,14 @@ app.post('/webhook', async (req, res) => {
                 // Salva no Supabase como conversa do vendedor e encerra
                 await salvarMensagem(telefone, mensagem, 'cliente', vendedorDoNumero, 'conversa_vendedor');
                 console.log(`💬 [${vendedorDoNumero}] cliente ${telefone}: ${mensagem}`);
+                return;
+        }
+
+        if (mensagemEhMidia) {
+                // Mídia pro número principal do bot: só registra, não manda pra IA
+                // (a IA não teria como responder algo coerente sobre a mídia em si).
+                await salvarMensagem(telefone, mensagem, 'cliente', null, 'desconhecido');
+                console.log(`📎 Mídia recebida no bot principal de ${telefone}: ${mensagem}`);
                 return;
         }
 
@@ -1358,6 +1379,10 @@ const PHONE_NUMBER_ID_POR_VENDEDOR = {
         paulo: process.env.META_PHONE_NUMBER_ID_PAULO,
 };
 
+// Nome com a capitalização correta, igual ao que o eco do WhatsApp Business App salva
+// (evita mensagem enviada pelo CRM "sumir" da conversa por causa de maiúscula/minúscula)
+const NOME_CAPITALIZADO_VENDEDOR = { rebecca: 'Rebecca', taynara: 'Taynara', paulo: 'Paulo' };
+
 app.post('/enviar-vendedor', async (req, res) => {
         if (!checkAdminToken(req, res)) return;
 
@@ -1416,7 +1441,8 @@ app.post('/enviar-vendedor', async (req, res) => {
 
                 // Salva no Supabase no mesmo formato usado pelo eco do WhatsApp Business App,
                 // pra aparecer igual no histórico da conversa.
-                await salvarMensagem(telefoneLimpo, mensagem, 'vendedor', nomeVendedor, 'conversa_vendedor');
+                const nomeParaSalvar = NOME_CAPITALIZADO_VENDEDOR[nomeVendedor] || nomeVendedor;
+                await salvarMensagem(telefoneLimpo, mensagem, 'vendedor', nomeParaSalvar, 'conversa_vendedor');
 
                 console.log(`📨 [CRM] ${vendedor} → ${telefoneLimpo}: ${mensagem}`);
                 res.json({ ok: true, id: response.data?.messages?.[0]?.id || null });
