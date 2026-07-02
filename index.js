@@ -655,6 +655,14 @@ async function notificarVendedor(telefone, vendedor) {
                 { name: 'lead_horario',   value: dados.horario || '—' },
                 { name: 'lead_telefone',  value: `+${telefoneLimpo}` }
         ]);
+
+        // Atualiza vendedor no status_de_leads para que alertas futuros vão para o vendedor correto
+        await supabase.from('status_de_leads')
+                .upsert({ telefone: telefoneLimpo, vendedor, updated_at: new Date().toISOString() }, { onConflict: 'telefone' });
+
+        // Atualiza cache local também
+        vendedorPorTelefone[telefoneLimpo] = vendedor;
+
         console.log(`✅ Lead notificado para ${vendedor} (${numeroVendedor})`);
 }
 
