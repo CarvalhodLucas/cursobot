@@ -57,6 +57,10 @@ const reengajamentoEnviado = {};
 // Cache de vendedor por telefone para a sessão atual
 const vendedorPorTelefone = {};
 
+// Quando o admin manda mensagem manual pelo CRM no número principal (aba "Bot"),
+// a IA fica pausada pra esse telefone por um tempo, evitando resposta duplicada/conflitante.
+const pausaAdminManual = {};
+
 // Fila de leads pendentes por vendedor (chave = telefone do vendedor)
 // { '5521999999999': { atual: {telefone, nome}, fila: [...restantes] } }
 const pendentesAtualizacao = {};
@@ -1089,6 +1093,13 @@ app.post('/webhook', async (req, res) => {
                         return;
                 }
 
+                const PAUSA_ADMIN_MANUAL_MS = 3 * 60 * 60 * 1000; // 3 horas
+                if (pausaAdminManual[telefone] && (Date.now() - pausaAdminManual[telefone]) < PAUSA_ADMIN_MANUAL_MS) {
+                        await salvarMensagem(telefone, mensagem, 'cliente', vendedor, 'desconhecido');
+                        console.log(`⏸️ IA pausada (admin assumiu manualmente) para ${telefone} — mensagem salva sem resposta automática.`);
+                        return;
+                }
+
                 const reply = await askAI(telefone, mensagem);
                 let tipo = detectarTipo(mensagem, reply);
 
@@ -1338,6 +1349,82 @@ function checkAdminToken(req, res) {
         }
         return true;
 }
+
+// Rota para o CRM enviar mensagem como um vendedor (Rebecca/Taynara) via Cloud API,
+// substituindo a necessidade de WhatsApp Web/linked device nesses números.
+const PHONE_NUMBER_ID_POR_VENDEDOR = {
+        rebecca: process.env.META_PHONE_NUMBER_ID_REBECCA,
+        taynara: process.env.META_PHONE_NUMBER_ID_TAYNARA,
+        paulo: process.env.META_PHONE_NUMBER_ID_PAULO,
+};
+
+app.post('/enviar-vendedor', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+
+        const { telefone, vendedor, mensagem } = req.body || {};
+        if (!telefone || !vendedor || !mensagem) {
+                return res.status(400).json({ error: 'telefone, vendedor e mensagem são obrigatórios' });
+        }
+
+        const nomeVendedor = String(vendedor).toLowerCase().trim();
+        const telefoneLimpo = String(telefone).replace(/\D/g, '');
+        const accessToken = process.env.META_ACCESS_TOKEN;
+
+        // Caso especial: aba "Bot" — envia pelo número principal (admin assume a conversa da IA)
+        if (nomeVendedor === 'bot') {
+                const phoneNumberIdBot = process.env.META_PHONE_NUMBER_ID;
+                try {
+                        const response = await axios.post(
+                                `https://graph.facebook.com/v21.0/${phoneNumberIdBot}/messages`,
+                                {
+                                        messaging_product: 'whatsapp',
+                                        to: telefoneLimpo,
+                                        type: 'text',
+                                        text: { body: mensagem }
+                                },
+                                { headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
+                        );
+
+                        // Pausa a IA pra esse telefone (admin assumiu manualmente) e registra a mensagem
+                        pausaAdminManual[telefoneLimpo] = Date.now();
+                        await salvarMensagem(telefoneLimpo, mensagem, 'bot', null, 'admin_manual');
+
+                        console.log(`📨 [CRM] Admin (Bot) → ${telefoneLimpo}: ${mensagem}`);
+                        return res.json({ ok: true, id: response.data?.messages?.[0]?.id || null });
+                } catch (err) {
+                        console.error('❌ Erro ao enviar via CRM (Bot):', err.response?.data || err.message);
+                        return res.status(500).json({ error: err.response?.data?.error?.message || err.message });
+                }
+        }
+
+        const phoneNumberId = PHONE_NUMBER_ID_POR_VENDEDOR[nomeVendedor];
+        if (!phoneNumberId) {
+                return res.status(400).json({ error: `Vendedor "${vendedor}" não está habilitado para envio pelo CRM` });
+        }
+
+        try {
+                const response = await axios.post(
+                        `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
+                        {
+                                messaging_product: 'whatsapp',
+                                to: telefoneLimpo,
+                                type: 'text',
+                                text: { body: mensagem }
+                        },
+                        { headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
+                );
+
+                // Salva no Supabase no mesmo formato usado pelo eco do WhatsApp Business App,
+                // pra aparecer igual no histórico da conversa.
+                await salvarMensagem(telefoneLimpo, mensagem, 'vendedor', nomeVendedor, 'conversa_vendedor');
+
+                console.log(`📨 [CRM] ${vendedor} → ${telefoneLimpo}: ${mensagem}`);
+                res.json({ ok: true, id: response.data?.messages?.[0]?.id || null });
+        } catch (err) {
+                console.error(`❌ Erro ao enviar via CRM (${vendedor}):`, err.response?.data || err.message);
+                res.status(500).json({ error: err.response?.data?.error?.message || err.message });
+        }
+});
 
 // Rota para resetar memória de um número
 app.get('/reset/:telefone', (req, res) => {
