@@ -54,8 +54,11 @@ const dadosLead = {};
 const ultimaAtividade = {};
 const reengajamentoEnviado = {};
 
-// Cache de vendedor por telefone para a sessão atual
+// Cache de vendedor por telefone para a sessao atual
 const vendedorPorTelefone = {};
+
+// Nome de perfil do WhatsApp por telefone (vem do campo contacts do webhook Meta)
+const nomeContatoPorTelefone = {};
 
 // Quando o admin manda mensagem manual pelo CRM no número principal (aba "Bot"),
 // a IA fica pausada pra esse telefone por um tempo, evitando resposta duplicada/conflitante.
@@ -685,12 +688,14 @@ async function notificarCoordenacao(telefone) {
 
 async function salvarMensagem(telefone, mensagem, de, vendedor, tipo = 'desconhecido') {
         try {
+                const nomeContato = nomeContatoPorTelefone[telefone] || null;
                 const { error } = await supabase.from('conversas').insert({
                         telefone,
                         mensagem,
                         de,
                         vendedor,
                         tipo,
+                        nome_contato: nomeContato,
                         created_at: new Date().toISOString()
                 });
                 if (error) {
@@ -911,6 +916,12 @@ app.post('/webhook', async (req, res) => {
         const phoneNumberId = value?.metadata?.phone_number_id;
         telefone = String(message.from).replace(/\D/g, '');
         mensagem = mensagemEhMidia ? MIDIA_LABELS[message.type] : message.text?.body;
+
+        // Nome de perfil do WhatsApp (vem junto no payload do webhook, quando disponivel)
+        const nomePerfilContato = value?.contacts?.[0]?.profile?.name;
+        if (nomePerfilContato) {
+                nomeContatoPorTelefone[telefone] = nomePerfilContato;
+        }
 
         const vendedorDoNumero = vendedorPorPhoneId[phoneNumberId];
 
