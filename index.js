@@ -686,7 +686,7 @@ async function notificarCoordenacao(telefone) {
 }
 
 
-async function salvarMensagem(telefone, mensagem, de, vendedor, tipo = 'desconhecido') {
+async function salvarMensagem(telefone, mensagem, de, vendedor, tipo = 'desconhecido', midiaUrl = null) {
         try {
                 const nomeContato = nomeContatoPorTelefone[telefone] || null;
                 const { error } = await supabase.from('conversas').insert({
@@ -696,6 +696,7 @@ async function salvarMensagem(telefone, mensagem, de, vendedor, tipo = 'desconhe
                         vendedor,
                         tipo,
                         nome_contato: nomeContato,
+                        midia_url: midiaUrl,
                         created_at: new Date().toISOString()
                 });
                 if (error) {
@@ -705,6 +706,47 @@ async function salvarMensagem(telefone, mensagem, de, vendedor, tipo = 'desconhe
                 }
         } catch (err) {
                 console.error(`❌ Erro ao salvar [${telefone}]: ${err.message}`);
+        }
+}
+
+// Baixa uma midia da Meta (imagem/audio/video/documento) usando o media_id do webhook
+// e sobe pro bucket 'midias' do Supabase Storage. Retorna a URL publica, ou null se falhar.
+async function baixarESubirMidia(mediaId, telefone, extensaoPadrao) {
+        try {
+                const accessToken = process.env.META_ACCESS_TOKEN;
+
+                // 1) Pega a URL temporaria (expira em poucos minutos) e o tipo do arquivo
+                const infoResp = await axios.get(`https://graph.facebook.com/v21.0/${mediaId}`, {
+                        headers: { 'Authorization': `Bearer ${accessToken}` }
+                });
+                const mediaUrl = infoResp.data?.url;
+                const mimeType = infoResp.data?.mime_type || 'application/octet-stream';
+                if (!mediaUrl) return null;
+
+                // 2) Baixa o binario (precisa do mesmo token na URL temporaria tambem)
+                const fileResp = await axios.get(mediaUrl, {
+                        headers: { 'Authorization': `Bearer ${accessToken}` },
+                        responseType: 'arraybuffer'
+                });
+                const buffer = Buffer.from(fileResp.data);
+
+                // 3) Sobe pro Supabase Storage
+                const extensao = mimeType.split('/')[1]?.split(';')[0] || extensaoPadrao || 'bin';
+                const caminho = `${telefone}/${Date.now()}.${extensao}`;
+                const { error: uploadError } = await supabase.storage
+                        .from('midias')
+                        .upload(caminho, buffer, { contentType: mimeType, upsert: false });
+
+                if (uploadError) {
+                        console.error(`❌ Falha ao subir midia pro Storage [${telefone}]: ${JSON.stringify(uploadError)}`);
+                        return null;
+                }
+
+                const { data: publicUrlData } = supabase.storage.from('midias').getPublicUrl(caminho);
+                return publicUrlData?.publicUrl || null;
+        } catch (err) {
+                console.error(`❌ Erro ao baixar/subir midia [${telefone}]: ${err.message}`);
+                return null;
         }
 }
 
@@ -917,6 +959,12 @@ app.post('/webhook', async (req, res) => {
         telefone = String(message.from).replace(/\D/g, '');
         mensagem = mensagemEhMidia ? MIDIA_LABELS[message.type] : message.text?.body;
 
+        // Audio: baixa da Meta e sobe pro Supabase Storage pra poder tocar no CRM
+        let midiaUrl = null;
+        if (message.type === 'audio' && message.audio?.id) {
+                midiaUrl = await baixarESubirMidia(message.audio.id, telefone, 'ogg');
+        }
+
         // Nome de perfil do WhatsApp (vem junto no payload do webhook, quando disponivel)
         const nomePerfilContato = value?.contacts?.[0]?.profile?.name;
         if (nomePerfilContato) {
@@ -927,7 +975,7 @@ app.post('/webhook', async (req, res) => {
 
         if (vendedorDoNumero) {
                 // Salva no Supabase como conversa do vendedor e encerra
-                await salvarMensagem(telefone, mensagem, 'cliente', vendedorDoNumero, 'conversa_vendedor');
+                await salvarMensagem(telefone, mensagem, 'cliente', vendedorDoNumero, 'conversa_vendedor', midiaUrl);
                 console.log(`💬 [${vendedorDoNumero}] cliente ${telefone}: ${mensagem}`);
                 return;
         }
@@ -935,7 +983,7 @@ app.post('/webhook', async (req, res) => {
         if (mensagemEhMidia) {
                 // Mídia pro número principal do bot: só registra, não manda pra IA
                 // (a IA não teria como responder algo coerente sobre a mídia em si).
-                await salvarMensagem(telefone, mensagem, 'cliente', null, 'desconhecido');
+                await salvarMensagem(telefone, mensagem, 'cliente', null, 'desconhecido', midiaUrl);
                 console.log(`📎 Mídia recebida no bot principal de ${telefone}: ${mensagem}`);
                 return;
         }
