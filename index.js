@@ -1518,13 +1518,13 @@ function salvarEstadoBot(telefone) {
 }
 // ────────────────────────────────────────────────────────────────────────────
 
-// Reengajamento após 24h de inatividade
+// Reengajamento após 23h de inatividade (dentro da janela de 24h — sem template)
 async function checkInatividade() {
         const agora = Date.now();
 
         // ── Fallback DB: busca direto em conversas — nao depende de estado_bot ──
         try {
-                const limite24h  = new Date(agora - 24 * 60 * 60 * 1000).toISOString();
+                const limite23h  = new Date(agora - 23 * 60 * 60 * 1000).toISOString();
                 const limite7d   = new Date(agora -  7 * 24 * 60 * 60 * 1000).toISOString();
 
                 const { data: jaEnviados } = await supabase
@@ -1538,7 +1538,7 @@ async function checkInatividade() {
                         .from('conversas')
                         .select('telefone, created_at')
                         .eq('de', 'cliente')
-                        .lte('created_at', limite24h)
+                        .lte('created_at', limite23h)
                         .gte('created_at', limite7d)
                         .order('created_at', { ascending: false });
 
@@ -1573,10 +1573,11 @@ async function checkInatividade() {
                                 continue;
                         }
 
-                        // Dados do lead não estão na memória → usa template inicial (sem variáveis)
+                        // Dados do lead não estão na memória → mensagem de texto (janela 24h ainda aberta)
+                        const msgReengFb = 'Oi! 👋 Ainda posso te ajudar com informações sobre nossos cursos do CNA Recreio? 😊';
                         console.log(`⏳ Reengajamento (fallback conversas) disparado para ${tel}`);
-                        sendTemplate(tel, 'reengajamento_inicial', []);
-                        salvarMensagem(tel, '[Template: reengajamento_inicial]', 'bot', null, 'reengajamento');
+                        await sendWhatsApp(tel, msgReengFb);
+                        salvarMensagem(tel, msgReengFb, 'bot', null, 'reengajamento');
                         reengajamentoEnviado[tel] = true;
                         ultimaAtividade[tel] = new Date(ultimaPorTel[tel]).getTime();
                         salvarEstadoBot(tel);
@@ -1589,7 +1590,7 @@ async function checkInatividade() {
 
         // ── Check principal: telefones em memória ────────────────────────────────
         for (const telefone in ultimaAtividade) {
-                if (agora - ultimaAtividade[telefone] > 24 * 60 * 60 * 1000 && !reengajamentoEnviado[telefone]) {
+                if (agora - ultimaAtividade[telefone] > 23 * 60 * 60 * 1000 && !reengajamentoEnviado[telefone]) {
                         // Consulta o banco para ver se essa conversa já foi encerrada/encaminhada
                         // Não reenvia reengajamento para: alunos, leads confirmados, ou quem já recebeu reengajamento recente
                         try {
@@ -1621,24 +1622,12 @@ async function checkInatividade() {
                         }
 
                         const dados = dadosLead[telefone] || {};
-                        let templateReeng = '';
-                        let varsReeng = [];
-
-                        if (!dados.nome) {
-                                templateReeng = 'reengajamento_inicial';
-                        } else if (dados.nome && (!dados.turma || !dados.horario)) {
-                                templateReeng = 'reengajamento_com_nome';
-                                varsReeng = [{ name: 'lead_nome', value: dados.nome }];
-                        } else if (dados.nome && dados.turma && dados.horario && !dados.confirmado) {
-                                templateReeng = 'reengajamento_confirmacao';
-                                varsReeng = [{ name: 'lead_nome', value: dados.nome }];
-                        }
-
-                        if (templateReeng) {
-                                console.log(`⏳ Reengajamento disparado para ${telefone} (${templateReeng})`);
-                                sendTemplate(telefone, templateReeng, varsReeng);
-                                const varStr = varsReeng.length > 0 ? varsReeng.map(v => v.value || v).join(' ') : '';
-                                salvarMensagem(telefone, `[Template: ${templateReeng}]${varStr ? ' ' + varStr : ''}`, 'bot', null, 'reengajamento');
+                        if (!dados.confirmado) {
+                                const nomeLead = dados.nome ? `, ${dados.nome}` : '';
+                                const msgReeng = `Oi${nomeLead}! 👋 Ainda posso te ajudar com informações sobre nossos cursos do CNA Recreio? 😊`;
+                                console.log(`⏳ Reengajamento disparado para ${telefone}`);
+                                await sendWhatsApp(telefone, msgReeng);
+                                salvarMensagem(telefone, msgReeng, 'bot', null, 'reengajamento');
                                 reengajamentoEnviado[telefone] = true;
                                 salvarEstadoBot(telefone);
                         }
