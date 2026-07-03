@@ -5,7 +5,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '20mb' })); // permite anexos (imagem/documento) em base64 vindos do CRM
 
 // CORS — restringe às origens configuradas em ALLOWED_ORIGINS (vírgula separada)
 // Em desenvolvimento (variável não definida), aceita qualquer origem.
@@ -1507,6 +1507,76 @@ app.post('/enviar-vendedor', async (req, res) => {
                 res.json({ ok: true, id: response.data?.messages?.[0]?.id || null });
         } catch (err) {
                 console.error(`❌ Erro ao enviar via CRM (${vendedor}):`, err.response?.data || err.message);
+                res.status(500).json({ error: err.response?.data?.error?.message || err.message });
+        }
+});
+
+// Envia uma imagem ou documento pelo CRM (botão de anexo da aba WhatsApp).
+// Recebe o arquivo em base64, sobe pro Supabase Storage e manda pra Meta por link.
+app.post('/enviar-midia-vendedor', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+
+        const { telefone, vendedor, arquivoBase64, arquivoNome, arquivoTipo, legenda } = req.body || {};
+        if (!telefone || !vendedor || !arquivoBase64 || !arquivoTipo) {
+                return res.status(400).json({ error: 'telefone, vendedor, arquivoBase64 e arquivoTipo são obrigatórios' });
+        }
+
+        const nomeVendedor = String(vendedor).toLowerCase().trim();
+        const telefoneLimpo = String(telefone).replace(/\D/g, '');
+        const accessToken = process.env.META_ACCESS_TOKEN;
+
+        const phoneNumberId = nomeVendedor === 'bot'
+                ? process.env.META_PHONE_NUMBER_ID
+                : PHONE_NUMBER_ID_POR_VENDEDOR[nomeVendedor];
+        if (!phoneNumberId) {
+                return res.status(400).json({ error: `Vendedor "${vendedor}" não está habilitado para envio pelo CRM` });
+        }
+
+        try {
+                // 1) Decodifica e sobe pro Storage
+                const base64Limpo = arquivoBase64.includes(',') ? arquivoBase64.split(',')[1] : arquivoBase64;
+                const buffer = Buffer.from(base64Limpo, 'base64');
+                const nomeSeguro = (arquivoNome || 'arquivo').replace(/[^a-zA-Z0-9._-]/g, '_');
+                const caminho = `enviados/${telefoneLimpo}/${Date.now()}_${nomeSeguro}`;
+
+                const { error: uploadError } = await supabase.storage
+                        .from('midias')
+                        .upload(caminho, buffer, { contentType: arquivoTipo, upsert: false });
+                if (uploadError) {
+                        return res.status(500).json({ error: 'Falha ao subir arquivo: ' + JSON.stringify(uploadError) });
+                }
+                const { data: publicUrlData } = supabase.storage.from('midias').getPublicUrl(caminho);
+                const urlPublica = publicUrlData?.publicUrl;
+                if (!urlPublica) {
+                        return res.status(500).json({ error: 'Não foi possível gerar a URL pública do arquivo' });
+                }
+
+                // 2) Monta a mensagem pra Meta (imagem ou documento, por link)
+                const ehImagem = arquivoTipo.startsWith('image/');
+                const payloadMeta = ehImagem
+                        ? { messaging_product: 'whatsapp', to: telefoneLimpo, type: 'image', image: { link: urlPublica, caption: legenda || undefined } }
+                        : { messaging_product: 'whatsapp', to: telefoneLimpo, type: 'document', document: { link: urlPublica, filename: nomeSeguro, caption: legenda || undefined } };
+
+                const response = await axios.post(
+                        `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
+                        payloadMeta,
+                        { headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
+                );
+
+                // 3) Salva no histórico do CRM
+                const textoPlaceholder = ehImagem ? '📷 Imagem enviada' : `📄 Documento enviado: ${nomeSeguro}`;
+                if (nomeVendedor === 'bot') {
+                        pausaAdminManual[telefoneLimpo] = Date.now();
+                        await salvarMensagem(telefoneLimpo, textoPlaceholder, 'bot', null, 'admin_manual', urlPublica);
+                } else {
+                        const nomeParaSalvar = NOME_CAPITALIZADO_VENDEDOR[nomeVendedor] || nomeVendedor;
+                        await salvarMensagem(telefoneLimpo, textoPlaceholder, 'vendedor', nomeParaSalvar, 'conversa_vendedor', urlPublica);
+                }
+
+                console.log(`📨 [CRM] ${vendedor} → ${telefoneLimpo}: ${textoPlaceholder}`);
+                res.json({ ok: true, url: urlPublica, id: response.data?.messages?.[0]?.id || null });
+        } catch (err) {
+                console.error(`❌ Erro ao enviar mídia via CRM (${vendedor}):`, err.response?.data || err.message);
                 res.status(500).json({ error: err.response?.data?.error?.message || err.message });
         }
 });
