@@ -991,6 +991,21 @@ app.post('/webhook', async (req, res) => {
                 sticker: '🌟 Figurinha recebida',
         };
 
+        // ── statuses: status de entrega (enviado/entregue/lido/falhou) das mensagens que O BOT mandou ──
+        // A Meta nunca dava esse retorno visivel antes; agora logamos pra conseguir diagnosticar
+        // quando uma mensagem é "enviada" pela API mas não chega de verdade no celular.
+        if (Array.isArray(value?.statuses) && value.statuses.length > 0) {
+                value.statuses.forEach(st => {
+                        if (st.status === 'failed') {
+                                const erro = st.errors?.[0];
+                                console.error(`❌ Falha de entrega pra ${st.recipient_id}: [${erro?.code}] ${erro?.title || erro?.message || 'sem detalhe'} — ${erro?.error_data?.details || ''}`);
+                        } else {
+                                console.log(`📶 Status "${st.status}" para ${st.recipient_id} (msg ${st.id})`);
+                        }
+                });
+                return;
+        }
+
         // ── smb_message_echoes: mensagem ENVIADA pela vendedora no celular ──
         if (field === 'smb_message_echoes') {
                 const echo = value?.message_echoes?.[0];
@@ -2769,6 +2784,19 @@ app.get('/reengajar/:telefone', async (req, res) => {
                 res.json({ ok: true, msg: `Reengajamento enviado para ${tel}` });
         } catch (e) {
                 res.status(500).json({ ok: false, msg: e.message });
+        }
+});
+
+// Rota de teste manual: dispara o alerta de coordenação agora, sem precisar esperar
+// um cliente cair no fluxo de "aluno". Ajuda a diagnosticar se o template/número tá ok.
+app.get('/testar-alerta-coordenacao', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+        if (!NUMERO_COORDENACAO) return res.status(400).json({ ok: false, msg: 'NUMERO_COORDENACAO não configurado no Railway' });
+        try {
+                await notificarCoordenacao('5521999990000');
+                res.json({ ok: true, msg: `Template alerta_coordenacao disparado pra ${NUMERO_COORDENACAO}. Confira o celular e os logs.` });
+        } catch (e) {
+                res.status(500).json({ ok: false, msg: e.response?.data?.error?.message || e.message, detalhe: e.response?.data || null });
         }
 });
 
