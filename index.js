@@ -682,6 +682,12 @@ async function notificarCoordenacao(telefone) {
         const telefoneLimpo = String(telefone).replace(/\D/g, '');
 
         await sendTemplate(NUMERO_COORDENACAO, 'alerta_coordenacao', [telefoneLimpo]);
+
+        // Registra no Supabase (texto real do template aprovado na Meta) pra aparecer no CRM —
+        // antes esse envio ficava só no console, sem nenhum rastro visível pro time.
+        const textoTemplateCoord = `🎓 Aluno aguardando atendimento da coordenação.\n📞 Número: ${telefoneLimpo}\n\nPor favor, retorne o contato.`;
+        await salvarMensagem(NUMERO_COORDENACAO, textoTemplateCoord, 'bot', 'Coordenação', 'alerta_coordenacao');
+
         console.log(`✅ Coordenação notificada para atender ${telefone}`);
 }
 
