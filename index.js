@@ -750,6 +750,49 @@ async function baixarESubirMidia(mediaId, telefone, extensaoPadrao) {
         }
 }
 
+// ─── IA de apoio ao vendedor (copiloto, resumo, classificacao) via OpenRouter ───
+// Cerebro separado do bot principal (que usa Groq/Gemini). So e chamado sob demanda,
+// quando o vendedor/admin clica em algum botao de IA no CRM.
+const OPENROUTER_MODEL = 'deepseek/deepseek-v4-flash';
+
+async function chamarOpenRouter(mensagens, maxTokens = 400) {
+        const apiKey = process.env.OPENROUTER_API_KEY;
+        if (!apiKey) throw new Error('OPENROUTER_API_KEY nao configurada no servidor');
+
+        const resp = await axios.post(
+                'https://openrouter.ai/api/v1/chat/completions',
+                {
+                        model: OPENROUTER_MODEL,
+                        messages: mensagens,
+                        max_tokens: maxTokens,
+                        temperature: 0.7
+                },
+                {
+                        headers: {
+                                'Authorization': `Bearer ${apiKey}`,
+                                'Content-Type': 'application/json',
+                                'HTTP-Referer': 'https://cursobot-production.up.railway.app',
+                                'X-Title': 'Studio Rastro CRM'
+                        },
+                        timeout: 30000
+                }
+        );
+
+        return resp.data?.choices?.[0]?.message?.content?.trim() || '';
+}
+
+// Busca as ultimas N mensagens de uma conversa (cliente + vendedor) formatadas pro prompt
+async function buscarContextoConversa(telefone, vendedor, limite = 30) {
+        let query = supabase.from('conversas').select('mensagem,de,vendedor,created_at').eq('telefone', telefone);
+        if (vendedor) query = query.ilike('vendedor', vendedor);
+        const { data, error } = await query.order('created_at', { ascending: false }).limit(limite);
+        if (error || !data) return [];
+        return data.reverse().map(m => {
+                const autor = m.de === 'cliente' ? 'Cliente' : (m.de === 'vendedor' ? (m.vendedor || 'Vendedor') : 'Bot');
+                return `${autor}: ${m.mensagem}`;
+        });
+}
+
 async function getHistorico(telefone) {
         // Se já existe na RAM, não faz nada
         if (conversas[telefone]) return;
@@ -1577,6 +1620,147 @@ app.post('/enviar-midia-vendedor', async (req, res) => {
                 res.json({ ok: true, url: urlPublica, id: response.data?.messages?.[0]?.id || null });
         } catch (err) {
                 console.error(`❌ Erro ao enviar mídia via CRM (${vendedor}):`, err.response?.data || err.message);
+                res.status(500).json({ error: err.response?.data?.error?.message || err.message });
+        }
+});
+
+// Sugere uma resposta pro vendedor mandar, baseada no fim da conversa
+app.post('/ia/sugerir-resposta', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+        const { telefone, vendedor } = req.body || {};
+        if (!telefone) return res.status(400).json({ error: 'telefone é obrigatório' });
+
+        try {
+                const contexto = await buscarContextoConversa(telefone, vendedor === 'bot' ? null : vendedor, 20);
+                if (!contexto.length) return res.status(404).json({ error: 'Sem histórico de conversa pra sugerir resposta' });
+
+                const sugestao = await chamarOpenRouter([
+                        {
+                                role: 'system',
+                                content: 'Você ajuda um vendedor de uma escola de idiomas (CNA Recreio) a responder clientes no WhatsApp. ' +
+                                        'Leia a conversa e sugira UMA resposta curta, natural e simpática em português do Brasil, como se fosse o vendedor escrevendo. ' +
+                                        'Não use markdown, não use aspas, não se apresente, não explique — devolva só o texto da mensagem sugerida.'
+                        },
+                        { role: 'user', content: 'Conversa (mais recente por último):\n' + contexto.join('\n') }
+                ], 250);
+
+                res.json({ sugestao });
+        } catch (err) {
+                console.error('❌ Erro em /ia/sugerir-resposta:', err.response?.data || err.message);
+                res.status(500).json({ error: err.response?.data?.error?.message || err.message });
+        }
+});
+
+// Reescreve um texto com o mesmo sentido, mas com outras palavras
+app.post('/ia/reformular', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+        const { texto } = req.body || {};
+        if (!texto || !texto.trim()) return res.status(400).json({ error: 'texto é obrigatório' });
+
+        try {
+                const reformulado = await chamarOpenRouter([
+                        {
+                                role: 'system',
+                                content: 'Reescreva a mensagem do usuário em português do Brasil, mantendo exatamente o mesmo significado e o mesmo tom, ' +
+                                        'mas com palavras e estrutura diferentes. Mantenha um tamanho parecido. ' +
+                                        'Não use markdown, não use aspas, devolva só o texto reescrito, nada mais.'
+                        },
+                        { role: 'user', content: texto }
+                ], 250);
+
+                res.json({ reformulado });
+        } catch (err) {
+                console.error('❌ Erro em /ia/reformular:', err.response?.data || err.message);
+                res.status(500).json({ error: err.response?.data?.error?.message || err.message });
+        }
+});
+
+// Resume a conversa inteira. Fica em cache na tabela ia_analises ate alguem pedir pra regerar (forcar:true)
+app.post('/ia/resumo-conversa', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+        const { telefone, vendedor, forcar } = req.body || {};
+        if (!telefone) return res.status(400).json({ error: 'telefone é obrigatório' });
+
+        try {
+                if (!forcar) {
+                        const { data: cache } = await supabase.from('ia_analises').select('resumo,atualizado_em').eq('telefone', telefone).maybeSingle();
+                        if (cache && cache.resumo) {
+                                return res.json({ resumo: cache.resumo, atualizado_em: cache.atualizado_em, cache: true });
+                        }
+                }
+
+                const contexto = await buscarContextoConversa(telefone, vendedor === 'bot' ? null : vendedor, 100);
+                if (!contexto.length) return res.status(404).json({ error: 'Sem histórico de conversa pra resumir' });
+
+                const resumo = await chamarOpenRouter([
+                        {
+                                role: 'system',
+                                content: 'Resuma a conversa abaixo entre um cliente e um vendedor de uma escola de idiomas (CNA Recreio), em português do Brasil, ' +
+                                        'em no máximo 4 frases curtas. Foque em: o que o cliente quer/precisa, o que já foi combinado, e o que está pendente. ' +
+                                        'Não use markdown, devolva só o texto do resumo.'
+                        },
+                        { role: 'user', content: contexto.join('\n') }
+                ], 300);
+
+                const atualizadoEm = new Date().toISOString();
+                await supabase.from('ia_analises').upsert(
+                        { telefone, resumo, atualizado_em: atualizadoEm },
+                        { onConflict: 'telefone' }
+                );
+
+                res.json({ resumo, atualizado_em: atualizadoEm, cache: false });
+        } catch (err) {
+                console.error('❌ Erro em /ia/resumo-conversa:', err.response?.data || err.message);
+                res.status(500).json({ error: err.response?.data?.error?.message || err.message });
+        }
+});
+
+// Sugere um status pro lead com base na conversa. Tambem fica em cache (forcar:true regera)
+const STATUS_VALIDOS = ['novo', 'em_andamento', 'matriculado', 'aluno', 'pausado', 'perdido'];
+app.post('/ia/classificar-status', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+        const { telefone, vendedor, forcar } = req.body || {};
+        if (!telefone) return res.status(400).json({ error: 'telefone é obrigatório' });
+
+        try {
+                if (!forcar) {
+                        const { data: cache } = await supabase.from('ia_analises').select('status_sugerido,status_justificativa,atualizado_em').eq('telefone', telefone).maybeSingle();
+                        if (cache && cache.status_sugerido) {
+                                return res.json({ status: cache.status_sugerido, justificativa: cache.status_justificativa, atualizado_em: cache.atualizado_em, cache: true });
+                        }
+                }
+
+                const contexto = await buscarContextoConversa(telefone, vendedor === 'bot' ? null : vendedor, 40);
+                if (!contexto.length) return res.status(404).json({ error: 'Sem histórico de conversa pra classificar' });
+
+                const respostaBruta = await chamarOpenRouter([
+                        {
+                                role: 'system',
+                                content: 'Você classifica o status de um lead de uma escola de idiomas com base na conversa. ' +
+                                        `Escolha exatamente UM destes valores: ${STATUS_VALIDOS.join(', ')}. ` +
+                                        'Responda em UMA linha no formato exato "status: <valor> | motivo: <justificativa curta em português>". Nada mais.'
+                        },
+                        { role: 'user', content: contexto.join('\n') }
+                ], 150);
+
+                const matchStatus = respostaBruta.match(/status:\s*([a-z_]+)/i);
+                const matchMotivo = respostaBruta.match(/motivo:\s*(.+)/i);
+                const statusSugerido = matchStatus && STATUS_VALIDOS.includes(matchStatus[1].toLowerCase()) ? matchStatus[1].toLowerCase() : null;
+                const justificativa = matchMotivo ? matchMotivo[1].trim() : respostaBruta;
+
+                if (!statusSugerido) {
+                        return res.status(500).json({ error: 'IA não retornou um status reconhecível', bruto: respostaBruta });
+                }
+
+                const atualizadoEm = new Date().toISOString();
+                await supabase.from('ia_analises').upsert(
+                        { telefone, status_sugerido: statusSugerido, status_justificativa: justificativa, atualizado_em: atualizadoEm },
+                        { onConflict: 'telefone' }
+                );
+
+                res.json({ status: statusSugerido, justificativa, atualizado_em: atualizadoEm, cache: false });
+        } catch (err) {
+                console.error('❌ Erro em /ia/classificar-status:', err.response?.data || err.message);
                 res.status(500).json({ error: err.response?.data?.error?.message || err.message });
         }
 });
