@@ -782,12 +782,28 @@ async function chamarOpenRouter(mensagens, maxTokens = 400) {
 }
 
 // Busca as ultimas N mensagens de uma conversa (cliente + vendedor) formatadas pro prompt
-async function buscarContextoConversa(telefone, vendedor, limite = 30) {
+// janelaHoras: se definido, corta o historico quando ha um intervalo grande sem mensagens,
+// pra IA nao misturar uma conversa antiga/sem relacao com o assunto de agora.
+async function buscarContextoConversa(telefone, vendedor, limite = 30, janelaHoras = null) {
         let query = supabase.from('conversas').select('mensagem,de,vendedor,created_at').eq('telefone', telefone);
         if (vendedor) query = query.ilike('vendedor', vendedor);
         const { data, error } = await query.order('created_at', { ascending: false }).limit(limite);
-        if (error || !data) return [];
-        return data.reverse().map(m => {
+        if (error || !data || !data.length) return [];
+
+        let mensagens = data; // vem em ordem DESC (mais recente primeiro)
+        if (janelaHoras) {
+                const recentes = [];
+                let ultimoTs = null;
+                for (const m of data) {
+                        const ts = new Date(m.created_at).getTime();
+                        if (ultimoTs !== null && (ultimoTs - ts) > janelaHoras * 60 * 60 * 1000) break;
+                        recentes.push(m);
+                        ultimoTs = ts;
+                }
+                mensagens = recentes;
+        }
+
+        return mensagens.reverse().map(m => {
                 const autor = m.de === 'cliente' ? 'Cliente' : (m.de === 'vendedor' ? (m.vendedor || 'Vendedor') : 'Bot');
                 return `${autor}: ${m.mensagem}`;
         });
@@ -1631,7 +1647,7 @@ app.post('/ia/sugerir-resposta', async (req, res) => {
         if (!telefone) return res.status(400).json({ error: 'telefone é obrigatório' });
 
         try {
-                const contexto = await buscarContextoConversa(telefone, vendedor === 'bot' ? null : vendedor, 20);
+                const contexto = await buscarContextoConversa(telefone, vendedor === 'bot' ? null : vendedor, 20, 12);
                 if (!contexto.length) return res.status(404).json({ error: 'Sem histórico de conversa pra sugerir resposta' });
 
                 const sugestao = await chamarOpenRouter([
@@ -1730,7 +1746,7 @@ app.post('/ia/classificar-status', async (req, res) => {
                         }
                 }
 
-                const contexto = await buscarContextoConversa(telefone, vendedor === 'bot' ? null : vendedor, 40);
+                const contexto = await buscarContextoConversa(telefone, vendedor === 'bot' ? null : vendedor, 40, 48);
                 if (!contexto.length) return res.status(404).json({ error: 'Sem histórico de conversa pra classificar' });
 
                 const respostaBruta = await chamarOpenRouter([
