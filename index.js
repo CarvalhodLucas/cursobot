@@ -2532,7 +2532,15 @@ async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
                         primeiro.nome || 'sem nome',
                         primeiro.telefone
                 ]);
-                salvarMensagem(numeroVendedor, `[Template: atualizar_status_lead] ${primeiro.nome} (${primeiro.telefone})`, 'sistema', nomeVendedor.toLowerCase(), 'alerta_vendedor');
+                // Texto exato do template aprovado na Meta, com as variáveis já substituídas —
+                // assim o CRM mostra a mensagem real que o vendedor recebeu, não um placeholder cru.
+                const textoTemplateStatus = `Olá ${nomeVendedor}! 👋\n\n` +
+                        `O lead ${primeiro.nome || 'sem nome'} (${primeiro.telefone}) está há mais de 7 dias sem atualização.\n\n` +
+                        `Como ficou? Responda com uma das opções abaixo:\n\n` +
+                        `✅ matriculado\n🔵 em andamento\n❌ perdido – motivo\n🔵 pausado – motivo\n🎓 aluno\n\n` +
+                        `Se perdido ou pausado, inclua o motivo na mesma mensagem.\n` +
+                        `Ex: perdido – sem interesse no momento`;
+                salvarMensagem(numeroVendedor, textoTemplateStatus, 'sistema', nomeVendedor.toLowerCase(), 'alerta_vendedor');
                 console.log(`🔔 Alerta de status enviado para ${nomeVendedor}: ${leadsNovos.length} lead(s)`);
         } catch (err) {
                 console.error(`❌ Erro ao enviar alerta para ${nomeVendedor}:`, err.message);
