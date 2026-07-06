@@ -299,7 +299,7 @@ lidToPhone         // mapeamento LID → telefone (WhatsApp privacy)
 9. **`checkInatividade` DB fallback** — não dependia de `estado_bot`, busca direto em `conversas`
 
 ### Pendências abertas
-- **Paulo banido permanentemente** — número +55 21 97233-1685 banido pela Meta. Appeal via Business Support Home (botão "Solicite a análise"). Causa: trocou de celular e voltou pro antigo, Meta detectou como atividade suspeita.
+- ~~Paulo banido permanentemente~~ — **RESOLVIDO (02/07/2026): número +55 21 97233-1685 voltou a funcionar 100%** após appeal via Business Support Home. Causa provável do banimento: uso do WhatsApp Web/linked device junto com o número em modo Coexistência (ver nota abaixo).
 - **Template `atualizar_status_lead`** — criado, aguardando aprovação Meta (desde 29/06)
 - **Template `resumo_diario_util`** — criado, aguardando aprovação Meta (desde 01/07)
 - **Migração WANotifier → WABA principal** — Rebecca e Taynara ainda no WANotifier separado. Para migrar: remover do WANotifier → aguardar → adicionar ao WABA principal → atualizar variáveis do Railway

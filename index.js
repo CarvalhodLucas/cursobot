@@ -128,10 +128,11 @@ async function getVendedor() {
                         console.log(`📅 Sábado → ${sabadoMatches[0].vendedor} (paridade: ${sabadoMatches[0].sabado_paridade || 'sempre'})`);
                         return sabadoMatches[0].vendedor;
                 }
-                // Sem vendedor escalado para este sábado → fallback
-                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebecca' : ultimoVendedorFallback === 'Rebecca' ? 'Taynara' : 'Paulo';
-                console.log(`⚠️ Nenhum vendedor para sábado (paridade). Fallback: ${ultimoVendedorFallback}`);
-                return ultimoVendedorFallback;
+                // Sem vendedor escalado para este sábado → sorteio aleatório (só sábado usa sorteio; os demais fallbacks usam rodízio)
+                const vendedoresSorteio = ['Paulo', 'Rebecca', 'Taynara'];
+                const sorteado = vendedoresSorteio[Math.floor(Math.random() * vendedoresSorteio.length)];
+                console.log(`🎲 Nenhum vendedor escalado pra este sábado. Sorteio: ${sorteado}`);
+                return sorteado;
         }
 
         // Usamos uma pequena margem para evitar problemas de precisão com floats
@@ -2259,13 +2260,28 @@ async function enviarResumoDiario() {
                         }
                 }
 
-                await sendTemplate(NUMERO_GERENTE, 'resumo_diario_util', [dataStr]);
+                // Os números-chave vão DENTRO do template (variáveis {{1}}..{{7}}), porque um
+                // template sempre é entregue — não depende de janela de 24h aberta. Antes, só a frase
+                // fixa do template chegava e o texto com os dados de verdade (mensagem livre, abaixo)
+                // ficava pendurado esperando uma janela que normalmente está fechada (a gerente
+                // não fala com o bot todo dia), então o "dados a seguir" nunca vinha acompanhado de nada.
+                await sendTemplate(NUMERO_GERENTE, 'resumo_diario_util', [
+                        dataStr,
+                        String(totalLeadsNovos),
+                        String(viaBot),
+                        String(viaVendedor),
+                        String(contStatus.em_andamento),
+                        String(contStatus.matriculado),
+                        String(totalSemStatus)
+                ]);
                 await new Promise(r => setTimeout(r, 3000));
                 try {
                         await sendWhatsApp(NUMERO_GERENTE, msg);
-                        console.log(`📊 Resumo diário enviado para a gerente`);
+                        console.log(`📊 Resumo diário (detalhado) enviado para a gerente`);
                 } catch (errMsg) {
-                        console.error(`❌ Falha ao enviar texto do resumo (provavel template Marketing bloqueando janela):`, errMsg.response?.data || errMsg.message);
+                        // Só falha se a janela de 24h estiver fechada (gerente não respondeu o template) —
+                        // mas os números-chave já chegaram garantidos via template, então não é mais um apagão total.
+                        console.error(`⚠️ Detalhamento completo não enviado (janela de 24h fechada — a gerente precisa responder o template pra liberar). Números-chave já foram entregues via template.`, errMsg.response?.data || errMsg.message);
                 }
                 salvarMensagem(NUMERO_GERENTE, msg, 'sistema', 'bot', 'resumo_diario');
         } catch (err) {

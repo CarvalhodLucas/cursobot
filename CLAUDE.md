@@ -8,8 +8,10 @@
 ## Números de WhatsApp
 | Número | Nome | Conexão | Status no CRM |
 |--------|------|---------|---------------|
-| +55 21 97038-9751 | Bot principal | Z-API | ✅ Já salva no CRM |
+| +55 21 97038-9751 | Bot principal | Meta Cloud API (Z-API abandonado) | ✅ Já salva no CRM |
 | +55 21 97912-9143 | Studio Rastro | Meta Cloud API | ❌ Ainda não salva no CRM |
+
+> ⚠️ **Z-API não é mais utilizado.** O bot principal migrou para Meta Cloud API. Referências a Z-API no código ou nos docs são legado e podem ser ignoradas/removidas.
 
 ## Meta Cloud API — Studio Rastro
 - **WABA ID:** 1943356066360185

@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fluxograma Lógico do Bot - Estilo n8n</title>
+    <style>
+        :root {
+            --bg-canvas: #f1f3f5;
+            --grid-color: #cbd5e1;
+            --text-main: #1e293b;
+            --text-sub: #64748b;
+            --node-bg: #ffffff;
+            --node-border: #cbd5e1;
+            
+            --col-blue: #3b82f6;
+            --col-orange: #f97316;
+            --col-green: #10b981;
+            --col-purple: #8b5cf6;
+            --col-teal: #14b8a6;
+            --col-gray: #64748b;
+            --col-red: #ef4444;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #e2e8f0;
+            margin: 0;
+            padding: 0;
+            color: var(--text-main);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Cabeçalho superior fixo */
+        .header {
+            width: 100%;
+            background: #ffffff;
+            border-bottom: 1px solid var(--node-border);
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-sizing: border-box;
+            z-index: 10;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+
+        .header-title-area h1 {
+            font-size: 1.2rem;
+            font-weight: 800;
+            margin: 0;
+            color: #0f172a;
+        }
+
+        .header-title-area p {
+            font-size: 0.8rem;
+            color: var(--text-sub);
+            margin: 2px 0 0 0;
+        }
+
+        /* Controles flutuantes */
+        .controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn {
+            background-color: #ffffff;
+            color: var(--text-main);
+            border: 1px solid var(--node-border);
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 600;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .btn:hover {
+            background-color: #f8fafc;
+            border-color: #94a3b8;
+        }
+
+        /* Viewport de visualização estilo Figma/n8n */
+        .viewport {
+            flex: 1;
+            width: 100%;
+            position: relative;
+            overflow: hidden;
+            background-color: var(--bg-canvas);
+            background-image: radial-gradient(var(--grid-color) 1.5px, transparent 0);
+            background-size: 24px 24px;
+            cursor: grab;
+        }
+
+        .viewport:active {
+            cursor: grabbing;
+        }
+
+        /* Canvas móvel interno */
+        .canvas {
+            position: absolute;
+            transform-origin: 0 0;
+            display: flex;
+            gap: 140px;
+            padding: 100px;
+            width: max-content;
+            pointer-events: auto;
+        }
+
+        /* SVG para as conexões */
+        #connector-svg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        /* Colunas de etapas do workflow */
+        .flow-column {
+            display: flex;
+            flex-direction: column;
+            gap: 50px;
+            width: 250px;
+            position: relative;
+            z-index: 2;
+        }
+
+        .flow-column h3 {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-sub);
+            margin: 0 0 10px 0;
+            text-align: center;
+            border-bottom: 2px solid var(--node-border);
+            padding-bottom: 8px;
+        }
+
+        /* Cartões de nós (n8n Node Card) */
+        .node-card {
+            position: relative;
+            background-color: var(--node-bg);
+            border: 1px solid var(--node-border);
+            border-radius: 10px;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03);
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+            user-select: none;
+        }
+
+        .node-card:hover {
+            box-shadow: 0 10px 15px -3px rgba(0,0,0,0.08);
+            border-color: #94a3b8;
+        }
+
+        /* Ícone do nó */
+        .node-icon {
+            font-size: 1.4rem;
+            width: 38px;
+            height: 38px;
+            background-color: #f1f5f9;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        /* Conteúdo do nó */
+        .node-details {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            overflow: hidden;
+        }
+
+        .node-title {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: #0f172a;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .node-desc {
+            font-size: 0.72rem;
+            color: var(--text-sub);
+            line-height: 1.2;
+        }
+
+        /* Portas de conexão n8n (input/output) */
+        .port {
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background-color: #ffffff;
+            border: 2px solid var(--text-sub);
+            border-radius: 50%;
+            top: 50%;
+            transform: translateY(-50%);
+            z-index: 3;
+        }
+
+        .input-port {
+            left: -5px;
+        }
+
+        .output-port {
+            right: -5px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Cabeçalho Fixo -->
+    <div class="header">
+        <div class="header-title-area">
+            <h1>Fluxograma Lógico: Execução da Mensagem (Webhook)</h1>
+            <p>Passo a passo lógico de tomada de decisão do bot quando chega uma mensagem. Arraste e dê zoom para navegar.</p>
+        </div>
+        
+        <div class="controls">
+            <button class="btn" onclick="zoomIn()">🔍 Zoom +</button>
+            <button class="btn" onclick="zoomOut()">🔍 Zoom -</button>
+            <button class="btn" onclick="resetView()">🔄 Centralizar</button>
+        </div>
+    </div>
+    
+    <!-- Viewport estilo Figma -->
+    <div class="viewport" id="viewport">
+        <div class="canvas" id="canvas">
+            <!-- SVG Canvas para as linhas bezier de conexão -->
+            <svg id="connector-svg">
+                <defs>
+                    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                        <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#94a3b8" />
+                    </marker>
+                </defs>
+            </svg>
+            
+            <!-- Coluna 1: Entrada -->
+            <div class="flow-column" style="justify-content: center;">
+                <h3>1. Entrada</h3>
+                
+                <div class="node-card" id="node-webhook-recebido" style="border-left: 4px solid var(--col-blue);">
+                    <div class="port output-port"></div>
+                    <div class="node-icon">📩</div>
+                    <div class="node-details">
+                        <div class="node-title">Webhook Recebido</div>
+                        <div class="node-desc">Mensagem recebida no POST /webhook</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Coluna 2: Triagem Inicial -->
+            <div class="flow-column" style="justify-content: center;">
+                <h3>2. Triagem Inicial</h3>
+                
+                <div class="node-card" id="node-check-vendedor-msg" style="border-left: 4px solid var(--col-orange);">
+                    <div class="port input-port"></div>
+                    <div class="port output-port"></div>
+                    <div class="node-icon">🔍</div>
+                    <div class="node-details">
+                        <div class="node-title">Remetente é Vendedor?</div>
+                        <div class="node-desc">Verifica se número pertence ao chat da vendedora</div>
+                    </div>
+                </div>
+                
+                <div class="node-card" id="node-fim-vendedor" style="border-left: 4px solid var(--col-gray);">
+                    <div class="port input-port"></div>
+                    <div class="node-icon">🛑</div>
+                    <div class="node-details">
+                        <div class="node-title">Salva e Encerra</div>
+                        <div class="node-desc">Grava no banco como chat vendedor e para o fluxo</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Coluna 3: LGPD & Consentimento -->
+            <div class="flow-column" style="justify-content: center;">
+                <h3>3. Consentimento</h3>
+                
+                <div class="node-card" id="node-check-lgpd" style="border-left: 4px solid var(--col-teal);">
+                    <div class="port input-port"></div>
+                    <div class="port output-port"></div>
+                    <div class="node-icon">⚖️</div>
+                    <div class="node-details">
+                        <div class="node-title">Consentimento LGPD?</div>
+                        <div class="node-desc">Verifica se o lead já aceitou os termos no banco</div>
+                    </div>
+                </div>
+                
+                <div class="node-card" id="node-fim-lgpd" style="border-left: 4px solid var(--col-red);">
+                    <div class="port input-port"></div>
+                    <div class="node-icon">✉️</div>
+                    <div class="node-details">
+                        <div class="node-title">Solicita Aceite</div>
+                        <div class="node-desc">Envia mensagem de LGPD ao cliente e encerra</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Coluna 4: Classificação (Aluno ou Lead) -->
+            <div class="flow-column" style="justify-content: center;">
+                <h3>4. Classificação</h3>
+                
+                <div class="node-card" id="node-check-tipo" style="border-left: 4px solid var(--col-purple);">
+                    <div class="port input-port"></div>
+                    <div class="port output-port"></div>
+                    <div class="node-icon">🤖</div>
+                    <div class="node-details">
+                        <div class="node-title">É Aluno ou Lead Novo?</div>
+                        <div class="node-desc">IA ou status do DB define categoria</div>
+                    </div>
+                </div>
+                
+                <div class="node-card" id="node-fim-coordenacao" style="border-left: 4px solid var(--col-orange);">
+                    <div class="port input-port"></div>
+                    <div class="node-icon">🚨</div>
+                    <div class="node-details">
+                        <div class="node-title">Encaminha Coordenação</div>
+                        <div class="node-desc">Marca como aluno, avisa coordenação e encerra</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Coluna 5: Distribuição (Escala) -->
+            <div class="flow-column" style="justify-content: center;">
+                <h3>5. Roteamento</h3>
+                
+                <div class="node-card" id="node-check-vendedor-atribuido" style="border-left: 4px solid var(--col-green);">
+                    <div class="port input-port"></div>
+                    <div class="port output-port"></div>
+                    <div class="node-icon">👥</div>
+                    <div class="node-details">
+                        <div class="node-title">Já possui Vendedor?</div>
+                        <div class="node-desc">Checa se já tem atendente fixo associado</div>
+                    </div>
+                </div>
+                
+                <div class="node-card" id="node-escala-vendedor" style="border-left: 4px solid var(--col-blue);">
+                    <div class="port input-port"></div>
+                    <div class="port output-port"></div>
+                    <div class="node-icon">📅</div>
+                    <div class="node-details">
+                        <div class="node-title">Associa pela Escala</div>
+                        <div class="node-desc">Verifica horário da escala, associa e avisa vendedora</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Coluna 6: Resposta da IA -->
+            <div class="flow-column" style="justify-content: center;">
+                <h3>6. Resposta da IA</h3>
+                
+                <div class="node-card" id="node-rag" style="border-left: 4px solid var(--col-green);">
+                    <div class="port input-port"></div>
+                    <div class="port output-port"></div>
+                    <div class="node-icon">🔍</div>
+                    <div class="node-details">
+                        <div class="node-title">Consulta RAG</div>
+                        <div class="node-desc">Busca regras factuais da escola de idiomas</div>
+                    </div>
+                </div>
+
+                <div class="node-card" id="node-ai" style="border-left: 4px solid var(--col-purple);">
+                    <div class="port input-port"></div>
+                    <div class="port output-port"></div>
+                    <div class="node-icon">🧠</div>
+                    <div class="node-details">
+                        <div class="node-title">Orquestrador Groq/Gemini</div>
+                        <div class="node-desc">Gera texto adaptado com base nos fatos</div>
+                    </div>
+                </div>
+
+                <div class="node-card" id="node-fim-resposta" style="border-left: 4px solid var(--col-blue);">
+                    <div class="port input-port"></div>
+                    <div class="node-icon">📤</div>
+                    <div class="node-details">
+                        <div class="node-title">Envia e Grava</div>
+                        <div class="node-desc">Envia WhatsApp ao cliente e salva conversa no banco</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ── LÓGICA DE PAN (ARRASTAR) E ZOOM (ESTILO FIGMA) ──
+        const viewport = document.getElementById('viewport');
+        const canvas = document.getElementById('canvas');
+        
+        let scale = 0.85;
+        let translateX = 30;
+        let translateY = 10;
+        let isDragging = false;
+        let startX, startY;
+
+        function updateTransform() {
+            canvas.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+        }
+
+        viewport.addEventListener('mousedown', (e) => {
+            if (e.target.closest('.node-card') || e.target.closest('.btn')) return;
+            isDragging = true;
+            startX = e.clientX - translateX;
+            startY = e.clientY - translateY;
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            translateX = e.clientX - startX;
+            translateY = e.clientY - startY;
+            updateTransform();
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+
+        viewport.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoomFactor = 1.08;
+            const oldScale = scale;
+            
+            if (e.deltaY < 0) {
+                scale = Math.min(scale * zoomFactor, 2.0);
+            } else {
+                scale = Math.max(scale / zoomFactor, 0.35);
+            }
+            
+            const rect = viewport.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            translateX = mouseX - (mouseX - translateX) * (scale / oldScale);
+            translateY = mouseY - (mouseY - translateY) * (scale / oldScale);
+            
+            updateTransform();
+        });
+
+        function zoomIn() {
+            scale = Math.min(scale * 1.2, 2.0);
+            updateTransform();
+        }
+
+        function zoomOut() {
+            scale = Math.max(scale / 1.2, 0.35);
+            updateTransform();
+        }
+
+        function resetView() {
+            scale = 0.85;
+            translateX = 30;
+            translateY = 10;
+            updateTransform();
+        }
+
+        // ── LÓGICA DE CONEXÕES SVG ──
+        function redrawAllLines() {
+            const svg = document.getElementById('connector-svg');
+            const defs = svg.querySelector('defs');
+            svg.innerHTML = '';
+            svg.appendChild(defs);
+            
+            const tempTransform = canvas.style.transform;
+            canvas.style.transform = 'none';
+            
+            const canvasRect = canvas.getBoundingClientRect();
+            
+            function drawLine(fromId, toId, color = '#64748b', isDash = false, label = '') {
+                const fromCard = document.getElementById(fromId);
+                const toCard = document.getElementById(toId);
+                if (!fromCard || !toCard) return;
+                
+                const fromPort = fromCard.querySelector('.output-port');
+                const toPort = toCard.querySelector('.input-port');
+                
+                const fromRect = (fromPort || fromCard).getBoundingClientRect();
+                const toRect = (toPort || toCard).getBoundingClientRect();
+                
+                const x1 = (fromRect.left + fromRect.width / 2) - canvasRect.left;
+                const y1 = (fromRect.top + fromRect.height / 2) - canvasRect.top;
+                
+                const x2 = (toRect.left + toRect.width / 2) - canvasRect.left;
+                const y2 = (toRect.top + toRect.height / 2) - canvasRect.top;
+                
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                const controlOffset = Math.max(Math.abs(x2 - x1) * 0.5, 50);
+                const d = `M ${x1} ${y1} C ${x1 + controlOffset} ${y1}, ${x2 - controlOffset} ${y2}, ${x2} ${y2}`;
+                
+                path.setAttribute('d', d);
+                path.setAttribute('stroke', color);
+                path.setAttribute('stroke-width', '2.5');
+                path.setAttribute('fill', 'none');
+                path.setAttribute('marker-end', 'url(#arrow)');
+                
+                if (isDash) {
+                    path.setAttribute('stroke-dasharray', '5,5');
+                }
+                
+                svg.appendChild(path);
+
+                // Desenha a etiqueta de texto se fornecida
+                if (label) {
+                    const midX = (x1 + x2) / 2;
+                    const midY = (y1 + y2) / 2;
+                    
+                    const textBg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                    textBg.setAttribute('x', midX - 35);
+                    textBg.setAttribute('y', midY - 14);
+                    textBg.setAttribute('width', 70);
+                    textBg.setAttribute('height', 16);
+                    textBg.setAttribute('fill', '#ffffff');
+                    textBg.setAttribute('rx', '3');
+                    textBg.setAttribute('stroke', '#cbd5e1');
+                    textBg.setAttribute('stroke-width', '1');
+                    textBg.setAttribute('style', 'filter: drop-shadow(0 1px 2px rgba(0,0,0,0.05));');
+                    
+                    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    text.setAttribute('x', midX);
+                    text.setAttribute('y', midY - 2);
+                    text.setAttribute('fill', '#334155');
+                    text.setAttribute('font-size', '9px');
+                    text.setAttribute('font-weight', '700');
+                    text.setAttribute('text-anchor', 'middle');
+                    text.textContent = label;
+                    
+                    svg.appendChild(textBg);
+                    svg.appendChild(text);
+                }
+            }
+            
+            // 1. Mensagem recebida -> Checagem de Vendedor
+            drawLine('node-webhook-recebido', 'node-check-vendedor-msg', 'var(--col-blue)');
+            
+            // 2. Se for vendedora -> Salva e Encerra
+            drawLine('node-check-vendedor-msg', 'node-fim-vendedor', 'var(--col-orange)', false, 'Sim');
+            
+            // 3. Se for cliente -> Checagem LGPD
+            drawLine('node-check-vendedor-msg', 'node-check-lgpd', 'var(--col-blue)', false, 'Não');
+            
+            // 4. LGPD não aceito -> Solicita aceite e encerra
+            drawLine('node-check-lgpd', 'node-fim-lgpd', 'var(--col-red)', false, 'Não');
+            
+            // 5. LGPD aceito -> Classifica tipo
+            drawLine('node-check-lgpd', 'node-check-tipo', 'var(--col-blue)', false, 'Sim');
+            
+            // 6. Aluno -> Encaminha para Coordenação e encerra
+            drawLine('node-check-tipo', 'node-fim-coordenacao', 'var(--col-orange)', false, 'Aluno');
+            
+            // 7. Lead -> Roteador de vendedor
+            drawLine('node-check-tipo', 'node-check-vendedor-atribuido', 'var(--col-blue)', false, 'Lead');
+            
+            // 8. Não possui vendedor atribuído -> Atribui pela escala
+            drawLine('node-check-vendedor-atribuido', 'node-escala-vendedor', 'var(--col-blue)', false, 'Não');
+            
+            // 9. Com vendedor atribuído -> Busca RAG
+            drawLine('node-check-vendedor-atribuido', 'node-rag', 'var(--col-blue)', false, 'Sim');
+            
+            // 10. Escala feita -> Busca RAG
+            drawLine('node-escala-vendedor', 'node-rag', 'var(--col-blue)');
+
+            // 11. RAG -> IA
+            drawLine('node-rag', 'node-ai', 'var(--col-green)');
+
+            // 12. IA -> Envia e Grava
+            drawLine('node-ai', 'node-fim-resposta', 'var(--col-purple)');
+            
+            canvas.style.transform = tempTransform;
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            updateTransform();
+            setTimeout(redrawAllLines, 250);
+        });
+        
+        window.addEventListener('resize', redrawAllLines);
+    </script>
+</body>
+</html>
