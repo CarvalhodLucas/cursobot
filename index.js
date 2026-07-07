@@ -396,6 +396,15 @@ async function askGemini(telefone, mensagem, systemPromptFinal = SYSTEM_PROMPT) 
                 parts: [{ text: m.content }]
         })).slice(0, -1); // Remove a última mensagem que será enviada no sendMessage
 
+        // O Gemini exige que o histórico comece com role 'user'. Se a primeira mensagem
+        // guardada for do bot (ex: aviso de LGPD enviado antes da resposta do cliente, ou
+        // o corte das últimas 20 mensagens cortando bem no meio), remove o que sobrar de
+        // 'model' na frente até achar a primeira mensagem 'user' — senão a API rejeita com
+        // "First content should be with role 'user', got model" e o fallback inteiro falha.
+        while (history.length > 0 && history[0].role !== 'user') {
+                history.shift();
+        }
+
         const model = genAI.getGenerativeModel({
                 model: 'gemini-2.5-flash',
                 systemInstruction: systemPromptFinal
@@ -1291,9 +1300,19 @@ app.post('/webhook', async (req, res) => {
 
                 if (dadosLead[telefone].confirmado && !dadosLead[telefone].notificado) {
                         tipo = 'lead_confirmado';
-                        dadosLead[telefone].notificado = true;
-                        salvarEstadoBot(telefone);
-                        await notificarVendedor(telefone, vendedor);
+                        // Isolado num try/catch próprio: se a notificação do vendedor falhar (template
+                        // ausente, Meta fora do ar, etc.), o cliente ainda assim recebe a resposta dele —
+                        // antes, um erro aqui derrubava o fluxo inteiro e o cliente via "tive um probleminha".
+                        // "notificado" só vira true DEPOIS de confirmar que a notificação foi enviada —
+                        // antes marcava true de qualquer jeito, então uma falha ficava permanentemente
+                        // sem tentar de novo, mesmo depois do bug ser corrigido.
+                        try {
+                                await notificarVendedor(telefone, vendedor);
+                                dadosLead[telefone].notificado = true;
+                                salvarEstadoBot(telefone);
+                        } catch (errNotif) {
+                                console.error(`❌ Falha ao notificar vendedor ${vendedor} (cliente segue normalmente, vai tentar de novo na próxima mensagem):`, errNotif.response?.data || errNotif.message);
+                        }
                 } else if (dadosLead[telefone].confirmado) {
                         tipo = 'lead_confirmado';
                 }
