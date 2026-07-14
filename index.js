@@ -719,6 +719,17 @@ async function notificarVendedor(telefone, vendedor) {
                 { name: 'lead_telefone',  value: `+${telefoneLimpo}` }
         ]);
 
+        // Registra a notificação no CRM (aba "Bot Principal", tipo != conversa_vendedor pra
+        // não se misturar com o chat direto do vendedor). Antes essa mensagem só aparecia no
+        // CRM por acidente, via eco do webhook — e ainda saía com o vendedor errado.
+        const textoNotificacao = `🎓 *Novo lead confirmado!*\n\n` +
+                `👤 Nome: ${dados.nome || '—'}\n` +
+                `📚 Turma: ${dados.turma || '—'}\n` +
+                `⏰ Horário: ${dados.horario || '—'}\n` +
+                `📞 Telefone: +${telefoneLimpo}\n\n` +
+                `Entre em contato o quanto antes.`;
+        await salvarMensagem(numeroVendedor, textoNotificacao, 'sistema', nomeVendedor, 'notificacao_lead');
+
         // Atualiza vendedor no status_de_leads para que alertas futuros vão para o vendedor correto
         await supabase.from('status_de_leads')
                 .upsert({ telefone: telefoneLimpo, vendedor, updated_at: new Date().toISOString() }, { onConflict: 'telefone' });
@@ -1094,6 +1105,21 @@ app.post('/webhook', async (req, res) => {
         const phoneNumberId = value?.metadata?.phone_number_id;
         telefone = String(message.from).replace(/\D/g, '');
         mensagem = mensagemEhMidia ? MIDIA_LABELS[message.type] : message.text?.body;
+
+        // Guarda contra eco entre linhas internas: às vezes a Meta/Coexistência re-emite
+        // pro webhook de UM vendedor uma mensagem cujo "from" é o número de OUTRO vendedor
+        // (ex: notificação de lead que chegou no celular da Rebecca ecoa no webhook do
+        // Paulo com from=Rebecca). Isso não é uma conversa de cliente de verdade — se o
+        // remetente é um dos nossos próprios números internos, ignora e não salva/rotula errado.
+        const numerosInternos = new Set(
+                [process.env.NUMERO_REBECCA, process.env.NUMERO_PAULO, process.env.NUMERO_TAYNARA]
+                        .filter(Boolean)
+                        .map(n => normalizePhone(n))
+        );
+        if (numerosInternos.has(telefone)) {
+                console.log(`⏭️  Ignorado: mensagem interna (from=${telefone} é número de vendedor, não de cliente) — phone_number_id ${phoneNumberId}`);
+                return;
+        }
 
         // Audio: baixa da Meta e sobe pro Supabase Storage pra poder tocar no CRM
         let midiaUrl = null;
@@ -2448,6 +2474,13 @@ async function checkLeadsPausados() {
                                 { name: 'lead_nome',     value: nome },
                                 { name: 'lead_telefone', value: lead.telefone }
                         ]);
+                        await salvarMensagem(
+                                numeroVendedor,
+                                `⏰ *Lembrete: lead pausado*\n\n👤 ${nome}\n📞 ${lead.telefone}\n\nEsse lead voltou hoje da pausa — bora dar uma olhada?`,
+                                'sistema',
+                                vendedor,
+                                'notificacao_lead'
+                        );
                         console.log(`🔔 Lembrete de lead pausado enviado: ${lead.telefone} → ${vendedor}`);
                 }
         } catch (err) {
