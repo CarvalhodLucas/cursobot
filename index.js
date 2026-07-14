@@ -68,9 +68,44 @@ const pausaAdminManual = {};
 // { '5521999999999': { atual: {telefone, nome}, fila: [...restantes] } }
 const pendentesAtualizacao = {};
 
-// Rodízio para o período da tarde
-let ultimoVendedorTarde = 'Paulo';
-let ultimoVendedorFallback = 'Paulo';
+// Rodízio "justo": guarda quando cada vendedor recebeu o último lead (qualquer
+// tipo de atribuição — exclusiva ou por rodízio), persistido no Supabase pra não
+// resetar a cada deploy/restart do Railway. Quando 2+ vendedores estão de plantão
+// juntos, escolhe quem está há MAIS TEMPO sem receber, em vez de só girar um índice.
+let ultimaAtribuicaoPorVendedor = {};
+
+async function carregarRodizio() {
+        try {
+                const { data, error } = await supabase.from('rodizio_vendedores').select('*');
+                if (error) throw error;
+                (data || []).forEach(r => {
+                        if (r.ultima_atribuicao) ultimaAtribuicaoPorVendedor[r.vendedor] = new Date(r.ultima_atribuicao).getTime();
+                });
+                console.log('🔄 Rodízio restaurado do Supabase:', ultimaAtribuicaoPorVendedor);
+        } catch (e) {
+                console.error('❌ Erro ao carregar rodízio persistido:', e.message);
+        }
+}
+
+function registrarAtribuicao(vendedor) {
+        const agora = Date.now();
+        ultimaAtribuicaoPorVendedor[vendedor] = agora;
+        supabase.from('rodizio_vendedores')
+                .upsert({ vendedor, ultima_atribuicao: new Date(agora).toISOString() }, { onConflict: 'vendedor' })
+                .then(({ error }) => { if (error) console.error('❌ Erro ao salvar rodízio:', error.message); });
+}
+
+// Entre uma lista de vendedores ativos agora, escolhe quem está há mais tempo
+// sem receber um lead (nunca recebeu = prioridade máxima).
+function escolherPorFila(vendedoresAtivos) {
+        let escolhido = vendedoresAtivos[0];
+        let maisAntigo = ultimaAtribuicaoPorVendedor[escolhido] ?? 0;
+        for (const v of vendedoresAtivos) {
+                const t = ultimaAtribuicaoPorVendedor[v] ?? 0;
+                if (t < maisAntigo) { maisAntigo = t; escolhido = v; }
+        }
+        return escolhido;
+}
 
 // Status do bot para o CRM
 const botStatus = {
@@ -102,11 +137,14 @@ async function getVendedor() {
         const agora = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
         const hora = agora.getHours() + agora.getMinutes() / 60;
         const dia = agora.getDay();
+        const TODOS_VENDEDORES = ['Paulo', 'Rebecca', 'Taynara'];
 
-        // 1. Domingo — Fallback
+        // 1. Domingo — sem escala fixa, usa fila justa entre os três
         if (dia === 0) {
-                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebecca' : ultimoVendedorFallback === 'Rebecca' ? 'Taynara' : 'Paulo';
-                return ultimoVendedorFallback;
+                const escolhido = escolherPorFila(TODOS_VENDEDORES);
+                registrarAtribuicao(escolhido);
+                console.log(`🔄 Domingo (fila justa) → ${escolhido}`);
+                return escolhido;
         }
 
         // 2. Busca TODOS os vendedores ativos no horário atual (escala com sobreposição)
@@ -125,12 +163,14 @@ async function getVendedor() {
                         return true;
                 });
                 if (sabadoMatches.length > 0) {
-                        console.log(`📅 Sábado → ${sabadoMatches[0].vendedor} (paridade: ${sabadoMatches[0].sabado_paridade || 'sempre'})`);
-                        return sabadoMatches[0].vendedor;
+                        const escolhido = sabadoMatches[0].vendedor;
+                        registrarAtribuicao(escolhido);
+                        console.log(`📅 Sábado → ${escolhido} (paridade: ${sabadoMatches[0].sabado_paridade || 'sempre'})`);
+                        return escolhido;
                 }
-                // Sem vendedor escalado para este sábado → sorteio aleatório (só sábado usa sorteio; os demais fallbacks usam rodízio)
-                const vendedoresSorteio = ['Paulo', 'Rebecca', 'Taynara'];
-                const sorteado = vendedoresSorteio[Math.floor(Math.random() * vendedoresSorteio.length)];
+                // Sem vendedor escalado para este sábado → sorteio aleatório (só sábado usa sorteio; os demais fallbacks usam fila justa)
+                const sorteado = TODOS_VENDEDORES[Math.floor(Math.random() * TODOS_VENDEDORES.length)];
+                registrarAtribuicao(sorteado);
                 console.log(`🎲 Nenhum vendedor escalado pra este sábado. Sorteio: ${sorteado}`);
                 return sorteado;
         }
@@ -144,23 +184,29 @@ async function getVendedor() {
         });
 
         if (matches.length === 0) {
-                ultimoVendedorFallback = ultimoVendedorFallback === 'Paulo' ? 'Rebecca' : ultimoVendedorFallback === 'Rebecca' ? 'Taynara' : 'Paulo';
-                console.log(`⚠️ Nenhum vendedor escalado para dia ${dia} às ${hora.toFixed(2)}h. Usando fallback: ${ultimoVendedorFallback}`);
-                return ultimoVendedorFallback;
+                const escolhido = escolherPorFila(TODOS_VENDEDORES);
+                registrarAtribuicao(escolhido);
+                console.log(`⚠️ Nenhum vendedor escalado para dia ${dia} às ${hora.toFixed(2)}h. Fila justa → ${escolhido}`);
+                return escolhido;
         }
 
-        // 3. Exclusivo — apenas um vendedor no horário
+        // 3. Exclusivo — apenas um vendedor no horário. Mesmo sem opção de escolha,
+        // registra a atribuição — assim, na próxima vez que ele dividir o horário com
+        // outro vendedor, esse lead "solo" conta e ele não fica na frente da fila à toa.
         if (matches.length === 1) {
-                return matches[0].vendedor;
+                const escolhido = matches[0].vendedor;
+                registrarAtribuicao(escolhido);
+                return escolhido;
         }
 
-        // 4. Rodízio automático entre os vendedores ativos no momento
+        // 4. Rodízio "justo" entre os vendedores ativos no momento — não é só o próximo
+        // da lista, é quem está há mais tempo sem receber um lead (considerando
+        // qualquer atribuição anterior, inclusive as de horário exclusivo).
         const vendedoresAtivos = matches.map(m => m.vendedor);
-        const idxAtual = vendedoresAtivos.indexOf(ultimoVendedorTarde);
-        const proximoIdx = (idxAtual + 1) % vendedoresAtivos.length;
-        ultimoVendedorTarde = vendedoresAtivos[proximoIdx];
-        console.log(`🔄 Rodízio [${vendedoresAtivos.join('/')}] → ${ultimoVendedorTarde}`);
-        return ultimoVendedorTarde;
+        const escolhido = escolherPorFila(vendedoresAtivos);
+        registrarAtribuicao(escolhido);
+        console.log(`🔄 Rodízio [${vendedoresAtivos.join('/')}] → ${escolhido} (mais tempo sem receber)`);
+        return escolhido;
 }
 
 async function getVendedorDoTelefone(telefone) {
@@ -2846,6 +2892,8 @@ app.listen(PORT, () => {
         console.log(`🚀 Escola Bot rodando na porta ${PORT}`);
         // Restaura estado persistido (inatividade, reengajamento, confirmações)
         carregarEstadoBot();
+        // Restaura a fila do rodízio (quem recebeu lead por último), pra não resetar a cada deploy
+        carregarRodizio();
         // Agenda resumo diário às 8h BRT
         agendarResumoDiario();
         // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
