@@ -1365,8 +1365,16 @@ app.post('/webhook', async (req, res) => {
                 if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].trim();
                 if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].trim();
 
-                if (reply.includes('Seus dados foram registrados')) {
+                if (reply.includes('Seus dados foram registrados') && !dadosLead[telefone].confirmado) {
                         dadosLead[telefone].confirmado = true;
+
+                        // Reavalia o vendedor NESTE momento (confirmação), não usa o que foi
+                        // atribuído lá no primeiro "oi" do cliente — que pode ter sido horas ou
+                        // até um dia antes. Assim quem recebe o lead é sempre quem está na escala
+                        // (ou é a vez do rodízio) no horário real em que o lead foi confirmado.
+                        vendedor = await getVendedor();
+                        vendedorPorTelefone[telefone] = vendedor;
+
                         salvarEstadoBot(telefone);
                 }
 
@@ -2365,16 +2373,34 @@ async function enviarResumoDiario() {
                         String(contStatus.matriculado),
                         String(totalSemStatus)
                 ]);
+
+                // Salva no CRM o texto EXATO do template aprovado na Meta, com as variáveis já
+                // substituídas — é isso que realmente chega no WhatsApp da gerente. Antes o CRM só
+                // mostrava a mensagem livre detalhada (abaixo), mesmo quando ela não era entregue
+                // (janela de 24h fechada), fazendo o CRM mostrar algo diferente do que a gerente via.
+                const textoTemplateResumo = `📊 *Resumo diário de atendimento*\n` +
+                        `🗓️ ${dataStr}\n\n` +
+                        `👥 *Leads novos:* ${totalLeadsNovos}\n` +
+                        `🤖 Bot: ${viaBot}   🧑 Vendedor: ${viaVendedor}\n\n` +
+                        `📋 *Status geral*\n` +
+                        `🔵 Em andamento: ${contStatus.em_andamento}\n` +
+                        `✅ Matriculados: ${contStatus.matriculado}\n` +
+                        `⚠️ Sem status: ${totalSemStatus}\n\n` +
+                        `💬 Responda esta mensagem para receber o detalhamento completo dos leads de ontem.`;
+                await salvarMensagem(NUMERO_GERENTE, textoTemplateResumo, 'sistema', 'bot', 'resumo_diario');
+
                 await new Promise(r => setTimeout(r, 3000));
                 try {
                         await sendWhatsApp(NUMERO_GERENTE, msg);
                         console.log(`📊 Resumo diário (detalhado) enviado para a gerente`);
+                        // Só registra a mensagem detalhada no CRM se ela realmente foi entregue —
+                        // assim o CRM nunca mostra uma mensagem que a gerente não recebeu de verdade.
+                        await salvarMensagem(NUMERO_GERENTE, msg, 'sistema', 'bot', 'resumo_diario_detalhado');
                 } catch (errMsg) {
                         // Só falha se a janela de 24h estiver fechada (gerente não respondeu o template) —
                         // mas os números-chave já chegaram garantidos via template, então não é mais um apagão total.
                         console.error(`⚠️ Detalhamento completo não enviado (janela de 24h fechada — a gerente precisa responder o template pra liberar). Números-chave já foram entregues via template.`, errMsg.response?.data || errMsg.message);
                 }
-                salvarMensagem(NUMERO_GERENTE, msg, 'sistema', 'bot', 'resumo_diario');
         } catch (err) {
                 console.error('❌ Erro ao enviar resumo diário:', err.message);
         }
@@ -2870,14 +2896,27 @@ Seja objetivo. Máximo 600 palavras no total.`;
                 if (texto.trim()) blocos.push(texto);
 
                 await sendTemplate(NUMERO_GERENTE, 'relatorio_mensal');
+                await salvarMensagem(NUMERO_GERENTE, '[Template: relatorio_mensal] Seu relatório mensal está pronto — os detalhes chegam a seguir.', 'sistema', 'bot', 'relatorio_mensal');
                 await new Promise(r => setTimeout(r, 1500));
-                for (const bloco of blocos) {
-                        await sendWhatsApp(NUMERO_GERENTE, bloco);
-                        await new Promise(r => setTimeout(r, 1500)); // pausa entre mensagens
-                }
-                salvarMensagem(NUMERO_GERENTE, blocos.join('\n\n'), 'sistema', 'bot', 'relatorio_mensal');
 
-                console.log(`📋 Relatório mensal enviado (${blocos.length} mensagem(ns))`);
+                // Manda bloco por bloco e só registra no CRM o que realmente foi entregue —
+                // se a janela de 24h fechar no meio (gerente não responde há dias), os blocos
+                // restantes falham e não entram no CRM como se tivessem chegado.
+                const blocosEntregues = [];
+                try {
+                        for (const bloco of blocos) {
+                                await sendWhatsApp(NUMERO_GERENTE, bloco);
+                                blocosEntregues.push(bloco);
+                                await new Promise(r => setTimeout(r, 1500)); // pausa entre mensagens
+                        }
+                } catch (errBloco) {
+                        console.error(`⚠️ Relatório mensal: só ${blocosEntregues.length}/${blocos.length} bloco(s) entregues (janela de 24h fechada?).`, errBloco.response?.data || errBloco.message);
+                }
+                if (blocosEntregues.length > 0) {
+                        await salvarMensagem(NUMERO_GERENTE, blocosEntregues.join('\n\n'), 'sistema', 'bot', 'relatorio_mensal_detalhado');
+                }
+
+                console.log(`📋 Relatório mensal enviado (${blocosEntregues.length}/${blocos.length} bloco(s) entregues)`);
         } catch (err) {
                 console.error('❌ Erro ao gerar relatório mensal:', err.message);
         } finally {
