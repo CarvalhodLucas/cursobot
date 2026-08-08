@@ -2910,29 +2910,52 @@ async function gerarRelatorioMensal() {
                         .from('status_de_leads')
                         .select('telefone, status, nome, anotacao');
 
-                // 3. Amostra de conversas: 10 convertidas + 10 perdidas
+                // 3. Amostra de conversas POR VENDEDOR — cada um precisa da própria amostra
+                // (matriculados + perdidos + em andamento) pra IA conseguir avaliar o
+                // atendimento individual de cada um. Antes a amostra era genérica (10
+                // convertidos + 10 perdidos misturados de qualquer vendedor), então um
+                // vendedor com poucos leads podia ficar sem nenhuma conversa representada
+                // e não dava pra dar feedback individual de verdade.
                 const statusMap = {};
                 (todosStatus || []).forEach(s => { statusMap[s.telefone] = s; });
 
-                const convertidos = (leadsDoMes || []).filter(l => statusMap[l.telefone]?.status === 'matriculado');
-                const perdidos    = (leadsDoMes || []).filter(l => statusMap[l.telefone]?.status === 'perdido');
-                const amostra     = [...convertidos.slice(0, 10), ...perdidos.slice(0, 10)];
+                const porVendedorLeads = {};
+                (leadsDoMes || []).forEach(l => {
+                        const v = l.vendedor || 'desconhecido';
+                        if (!porVendedorLeads[v]) porVendedorLeads[v] = [];
+                        porVendedorLeads[v].push(l);
+                });
 
                 let conversasTexto = '';
-                for (const lead of amostra) {
-                        const { data: msgs } = await supabase
-                                .from('conversas')
-                                .select('mensagem, de, created_at')
-                                .eq('telefone', lead.telefone)
-                                .order('created_at', { ascending: true })
-                                .limit(15);
+                for (const [vendedorNome, leadsVend] of Object.entries(porVendedorLeads)) {
+                        // "desconhecido" = leads sem vendedor específico atribuído (ex: só bot,
+                        // sem confirmação) — não faz sentido avaliar "atendimento" de ninguém aqui.
+                        if (vendedorNome === 'desconhecido') continue;
 
-                        if (!msgs || msgs.length === 0) continue;
-                        const st = statusMap[lead.telefone];
-                        conversasTexto += `\n--- Lead: ${st?.nome || lead.telefone} | Vendedor: ${lead.vendedor} | Status: ${st?.status || 'sem status'} ---\n`;
-                        msgs.forEach(m => {
-                                conversasTexto += `[${m.de}]: ${m.mensagem.substring(0, 200)}\n`;
-                        });
+                        const matriculadosV = leadsVend.filter(l => statusMap[l.telefone]?.status === 'matriculado');
+                        const perdidosV     = leadsVend.filter(l => statusMap[l.telefone]?.status === 'perdido');
+                        const outrosV       = leadsVend.filter(l => !['matriculado', 'perdido'].includes(statusMap[l.telefone]?.status));
+                        // Prioriza matriculados e perdidos (mais informativos pra entender o que
+                        // funciona e o que não funciona), com uma pitada de "em andamento" pra
+                        // ver como ele conduz um atendimento ainda em curso.
+                        const amostraVend = [...matriculadosV.slice(0, 4), ...perdidosV.slice(0, 4), ...outrosV.slice(0, 2)];
+
+                        conversasTexto += `\n\n=========== VENDEDOR: ${vendedorNome} (${leadsVend.length} lead(s) no mês) ===========`;
+                        for (const lead of amostraVend) {
+                                const { data: msgs } = await supabase
+                                        .from('conversas')
+                                        .select('mensagem, de, created_at')
+                                        .eq('telefone', lead.telefone)
+                                        .order('created_at', { ascending: true })
+                                        .limit(15);
+
+                                if (!msgs || msgs.length === 0) continue;
+                                const st = statusMap[lead.telefone];
+                                conversasTexto += `\n--- Lead: ${st?.nome || lead.telefone} | Status: ${st?.status || 'sem status'} ---\n`;
+                                msgs.forEach(m => {
+                                        conversasTexto += `[${m.de}]: ${m.mensagem.substring(0, 200)}\n`;
+                                });
+                        }
                 }
                 const total       = leadsDoMes?.length || 0;
                 const viaBot      = (leadsDoMes || []).filter(l => l.tem_msg_bot).length;
@@ -2964,23 +2987,37 @@ MÉTRICAS DO MÊS:
 - Via bot: ${viaBot} | Via vendedor: ${total - viaBot}
 - Taxa de conversão: ${total > 0 ? Math.round(contStatus.matriculado / total * 100) : 0}%
 
-POR VENDEDOR:
+POR VENDEDOR (números):
 ${vendedoresTexto}
 
-AMOSTRA DE CONVERSAS (convertidas e perdidas):
-${conversasTexto.substring(0, 8000)}
+AMOSTRA DE CONVERSAS POR VENDEDOR (matriculados, perdidos e em andamento de cada um):
+${conversasTexto.substring(0, 14000)}
 
 Gere um relatório com exatamente estas seções:
 1. RESUMO EXECUTIVO (3-4 linhas)
-2. PERFORMANCE DOS VENDEDORES (análise individual)
-3. PRINCIPAIS OBJEÇÕES DOS LEADS (o que mais apareceu nas conversas)
+2. PERFORMANCE DOS VENDEDORES — analise CADA vendedor separadamente, com um bloco
+   próprio por nome, lendo as conversas reais dele na amostra acima (não invente, use
+   só o que está lá). Para cada vendedor, cubra:
+   - Pontos fortes: o que ele faz bem no atendimento (ex: rapidez, clareza, simpatia,
+     como contorna objeções, como conduz o fechamento).
+   - Pontos a melhorar: erros ou hábitos concretos observados nas conversas dele (ex:
+     demora pra responder, não faz perguntas de qualificação, não retoma leads parados,
+     não personaliza a mensagem, esquece de pedir o fechamento).
+   - Sugestões práticas: 2-3 ações específicas pra esse vendedor melhorar atendimento e
+     fechar mais matrículas no próximo mês.
+3. PRINCIPAIS OBJEÇÕES DOS LEADS (o que mais apareceu nas conversas, geral)
 4. PADRÕES IDENTIFICADOS (horários, perfil dos leads, o que funcionou)
-5. RECOMENDAÇÕES PARA O PRÓXIMO MÊS (3 a 5 ações práticas e concretas)
+5. RECOMENDAÇÕES PARA O PRÓXIMO MÊS (3 a 5 ações práticas e concretas, gerais pra equipe)
 
-Seja objetivo. Máximo 600 palavras no total.`;
+Seja objetivo e direto, mas não corte a seção 2 — ela é a mais importante deste
+relatório. Máximo 1100 palavras no total.`;
 
-                // 6. Chamada OpenRouter com fallback entre modelos
+                // 6. Chamada OpenRouter com fallback entre modelos. DeepSeek V4 Flash é pago
+                // mas muito barato (~$0,001 por relatório, roda 1x/mês) e bem mais confiável/
+                // melhor que os gratuitos — vai primeiro. Os gratuitos ficam como rede de
+                // segurança só pro caso raro do DeepSeek cair ou faltar crédito na conta.
                 const modelos = [
+                        'deepseek/deepseek-v4-flash',
                         'meta-llama/llama-3.3-70b-instruct:free',
                         'nvidia/nemotron-3-super-120b-a12b:free',
                         'openai/gpt-oss-120b:free',
@@ -2995,8 +3032,9 @@ Seja objetivo. Máximo 600 palavras no total.`;
                                 const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
                                         model: modelo,
                                         messages: [{ role: 'user', content: prompt }],
-                                        messages: [{ role: 'user', content: prompt }],
-                                        max_tokens: 1500
+                                        // Análise por vendedor deixou o relatório mais longo — 1500 tokens
+                                        // cortava a seção de performance no meio às vezes.
+                                        max_tokens: 2200
                                 }, {
                                         headers: {
                                                 'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
