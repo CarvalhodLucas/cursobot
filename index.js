@@ -67,10 +67,6 @@ const nomeContatoPorTelefone = {};
 // a IA fica pausada pra esse telefone por um tempo, evitando resposta duplicada/conflitante.
 const pausaAdminManual = {};
 
-// Fila de leads pendentes por vendedor (chave = telefone do vendedor)
-// { '5521999999999': { atual: {telefone, nome}, fila: [...restantes] } }
-const pendentesAtualizacao = {};
-
 // Relatórios (resumo diário / mensal) que já mandaram o template mas cujo conteúdo
 // detalhado (texto livre) está esperando o destinatário responder pra abrir a janela
 // de 24h. Chave = telefone. Valor = array com o(s) bloco(s) mais recentes a enviar
@@ -81,6 +77,13 @@ const pendentesAtualizacao = {};
 // ficar dias sem responder o resumo diário, ao responder recebe só o mais recente,
 // não uma enxurrada de dias antigos e desatualizados.
 const relatoriosPendentes = {};
+
+// Pesquisa de "lead perdido": quando um telefone acabou de receber (ou está prestes
+// a receber) a pergunta "o que achou do atendimento / por que não fechou", guardamos
+// aqui pra reconhecer a PRÓXIMA mensagem dele como resposta da pesquisa em vez de
+// deixar cair no fluxo normal de qualificação da IA. Chave = telefone. Valor =
+// { vendedorSalvar } — sempre enviada pelo número principal do bot.
+const aguardandoFeedbackPerdido = {};
 
 // Rodízio "justo": guarda quando cada vendedor recebeu o último lead (qualquer
 // tipo de atribuição — exclusiva ou por rodízio), persistido no Supabase pra não
@@ -778,6 +781,7 @@ async function enviarLivreOuItemPendente(telefone, texto, tipoSalvar, vendedorSa
         }
 }
 
+
 // Substitui TODA a fila de pendências desse telefone pelos itens do envio atual — um
 // relatório novo sempre vence qualquer pendência antiga (não acumula dias/meses velhos),
 // mas todos os blocos de UM MESMO relatório ficam juntos, entregues na mesma ordem.
@@ -1307,6 +1311,23 @@ app.post('/webhook', async (req, res) => {
                 return;
         }
 
+        // Resposta da pesquisa de "lead perdido" — não deixa cair no fluxo normal da IA
+        // (que perguntaria "você já é aluno?" de novo, sem sentido nesse contexto).
+        if (aguardandoFeedbackPerdido[telefone]) {
+                const origem = aguardandoFeedbackPerdido[telefone];
+                delete aguardandoFeedbackPerdido[telefone];
+                await salvarMensagem(telefone, mensagem, 'cliente', origem.vendedorSalvar || 'bot', 'feedback_perdido', midiaUrl);
+                const agradecimento = 'Muito obrigado pelo retorno! Isso nos ajuda bastante a melhorar 🙏';
+                try {
+                        await sendWhatsApp(telefone, agradecimento);
+                        await salvarMensagem(telefone, agradecimento, 'sistema', origem.vendedorSalvar || 'bot', 'feedback_perdido');
+                } catch (e) {
+                        console.error(`❌ Falha ao agradecer feedback de ${telefone}:`, e.response?.data || e.message);
+                }
+                console.log(`📮 Feedback de lead perdido recebido de ${telefone}: "${mensagem}"`);
+                return;
+        }
+
         // Atualiza status do último webhook recebido
         botStatus.ultimoWebhook = new Date().toISOString();
 
@@ -1328,115 +1349,6 @@ app.post('/webhook', async (req, res) => {
                 await sendWhatsApp(telefone, 'Seus dados foram removidos com sucesso. Obrigado! 😊');
                 return;
         }
-
-        // ── Resposta de vendedor ao prompt de atualização de status ──────────────
-        const numRebecca  = normalizePhone(process.env.NUMERO_REBECCA  || '');
-        const numPaulo    = normalizePhone(process.env.NUMERO_PAULO    || '');
-        const numTaynara  = normalizePhone(process.env.NUMERO_TAYNARA  || '');
-        const ehVendedor  = (telefone === numRebecca && numRebecca) || (telefone === numPaulo && numPaulo) || (telefone === numTaynara && numTaynara);
-
-        if (ehVendedor && pendentesAtualizacao[telefone]?.atual) {
-                const entrada = pendentesAtualizacao[telefone];
-                const lead = entrada.atual;
-                const nomeVendedorResposta = (telefone === numRebecca) ? 'Rebecca' : (telefone === numTaynara) ? 'Taynara' : 'Paulo';
-
-                const nomeVendLower = nomeVendedorResposta.toLowerCase();
-
-                // ── Resposta de status (aceita "perdido – motivo" na mesma mensagem) ──
-                // Normaliza separadores: "–", "-", "—", ":"
-                const respostaNorm = mensagem.trim()
-                        .replace(/[–—]/g, '-')
-                        .replace(/\s*:\s*/, ' - ');
-
-                // Extrai parte do status (antes do traço) e motivo (depois)
-                const [parteStatus, ...partesMotivo] = respostaNorm.split(/\s*-\s*/);
-                const motivoInline = partesMotivo.join(' - ').trim() || null;
-
-                const statusRaw = parteStatus.trim().toLowerCase()
-                        .replace(/em\s*andamento/g, 'em_andamento')
-                        .replace('emandamento', 'em_andamento');
-
-                const statusValidos = ['em_andamento', 'matriculado', 'perdido', 'pausado', 'aluno'];
-
-                if (statusValidos.includes(statusRaw)) {
-                        // Salva resposta do vendedor na conversa
-                        await salvarMensagem(telefone, mensagem.trim(), 'vendedor', nomeVendLower, 'resposta_vendedor');
-
-                        const upsertData = { telefone: lead.telefone, status: statusRaw, nome: lead.nome };
-                        if (motivoInline) upsertData.anotacao = motivoInline;
-
-                        await supabase.from('status_de_leads')
-                                .upsert(upsertData, { onConflict: 'telefone' });
-
-                        const labelStatus = statusRaw.replace('em_andamento', 'Em Andamento').replace(/^\w/, c => c.toUpperCase());
-                        if (motivoInline) {
-                                console.log(`✅ Status por ${nomeVendedorResposta}: ${lead.telefone} → ${statusRaw} ("${motivoInline}")`);
-                        } else {
-                                console.log(`✅ Status por ${nomeVendedorResposta}: ${lead.telefone} → ${statusRaw}`);
-                        }
-
-                        // Se perdido/pausado sem motivo → pede o motivo (fallback para quem não leu o template)
-                        if ((statusRaw === 'perdido' || statusRaw === 'pausado') && !motivoInline) {
-                                pendentesAtualizacao[telefone].aguardandoMotivo = true;
-                                pendentesAtualizacao[telefone].motivoStatus = statusRaw;
-                                const pergunta = `✅ *${lead.nome || lead.telefone}* → *${labelStatus}*\n\n❓ Qual foi o motivo? Responda livremente.`;
-                                await sendWhatsApp(telefone, pergunta);
-                                await salvarMensagem(telefone, pergunta, 'sistema', nomeVendLower, 'alerta_vendedor');
-                                return;
-                        }
-
-                        // ── Aguardando motivo de perda/pausa (fallback – segunda mensagem) ──
-                        if (entrada.aguardandoMotivo) {
-                                const motivo = mensagem.trim();
-                                await salvarMensagem(telefone, motivo, 'vendedor', nomeVendLower, 'resposta_vendedor');
-                                await supabase.from('status_de_leads')
-                                        .upsert({ telefone: lead.telefone, status: entrada.motivoStatus, nome: lead.nome, anotacao: motivo }, { onConflict: 'telefone' });
-                                entrada.aguardandoMotivo = false;
-                                entrada.motivoStatus = null;
-                                console.log(`📝 Motivo (2ª msg) por ${nomeVendedorResposta}: ${lead.telefone} → "${motivo}"`);
-                                let confirmacaoMotivo = `📝 Motivo registrado para *${lead.nome || lead.telefone}*.`;
-                                if (entrada.fila.length > 0) {
-                                        const proximo = entrada.fila.shift();
-                                        pendentesAtualizacao[telefone].atual = proximo;
-                                        const restam = entrada.fila.length + 1;
-                                        confirmacaoMotivo += `\n\n➡️ Próximo (${restam} restante${restam > 1 ? 's' : ''}):\n`;
-                                        confirmacaoMotivo += `👤 *${proximo.nome || 'sem nome'}*\n📞 ${proximo.telefone}\n\n`;
-                                        confirmacaoMotivo += `Como ficou? Responda com status e motivo se perdido/pausado.`;
-                                } else {
-                                        delete pendentesAtualizacao[telefone];
-                                        confirmacaoMotivo += `\n\n🎉 Todos os leads atualizados! Obrigado, ${nomeVendedorResposta}!`;
-                                }
-                                await sendWhatsApp(telefone, confirmacaoMotivo);
-                                await salvarMensagem(telefone, confirmacaoMotivo, 'sistema', nomeVendLower, 'alerta_vendedor');
-                                return;
-                        }
-
-                        let confirmacao = `✅ *${lead.nome || lead.telefone}* → *${labelStatus}*${motivoInline ? `\n📝 Motivo: ${motivoInline}` : ''}`;
-
-                        // Avança para o próximo da fila
-                        if (entrada.fila.length > 0) {
-                                const proximo = entrada.fila.shift();
-                                pendentesAtualizacao[telefone].atual = proximo;
-                                const restam = entrada.fila.length + 1;
-                                confirmacao += `\n\n➡️ Próximo (${restam} restante${restam > 1 ? 's' : ''}):\n`;
-                                confirmacao += `👤 *${proximo.nome || 'sem nome'}*\n📞 ${proximo.telefone}\n\n`;
-                                confirmacao += `Como ficou? Responda: *matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`;
-                        } else {
-                                delete pendentesAtualizacao[telefone];
-                                confirmacao += `\n\n🎉 Todos os leads atualizados! Obrigado, ${nomeVendedorResposta}!`;
-                        }
-
-                        await sendWhatsApp(telefone, confirmacao);
-                        await salvarMensagem(telefone, confirmacao, 'sistema', nomeVendLower, 'alerta_vendedor');
-                        return;
-                } else {
-                        // Resposta inválida — repete a pergunta
-                        await sendWhatsApp(telefone,
-                                `❓ Não entendi. Para *${lead.nome || lead.telefone}*, responda com:\n*matriculado*, *em andamento*, *perdido*, *pausado* ou *aluno*`);
-                        return;
-                }
-        }
-        // ─────────────────────────────────────────────────────────────────────────
 
         const jaConsentiu = await verificarConsentimento(telefone);
 
@@ -2173,10 +2085,10 @@ app.get('/classificar-antigos', async (req, res) => {
         console.log(`✅ /classificar-antigos concluído:`, contagem);
 });
 
-// Rota para processar backlog de leads "novo" — dispara prompt interativo aos vendedores
+// Rota para classificar leads antigos (>15 dias sem status) via IA e avisar a gerente
 app.get('/processar-novos', async (req, res) => {
         if (!checkAdminToken(req, res)) return;
-        res.json({ ok: true, msg: 'Enviando prompts de atualização para os vendedores...' });
+        res.json({ ok: true, msg: 'Classificando leads antigos...' });
         processarBacklogNovos();
 });
 
@@ -2631,6 +2543,82 @@ function agendarLembreteEscala() {
 }
 // ────────────────────────────────────────────────────────────────────────────
 
+// ── Lembrete semanal de status pros vendedores (toda segunda, 10h BRT) ──────
+// Substitui o antigo prompt diário interativo (removido — vendedores não
+// respondiam). Esse aqui é só um lembrete passivo, sem esperar resposta por
+// WhatsApp: manda a contagem de leads sem status e direciona pro CRM.
+async function contarLeadsAbertosPorVendedor(nomeVendedor) {
+        const { data: leadsVendedor } = await supabase
+                .from('leads_resumo')
+                .select('telefone')
+                .ilike('vendedor', `%${nomeVendedor}%`)
+                .eq('tem_msg_cliente', true);
+
+        if (!leadsVendedor || leadsVendedor.length === 0) return 0;
+
+        const telefones = leadsVendedor.map(l => l.telefone);
+        const { data: statusExistentes } = await supabase
+                .from('status_de_leads')
+                .select('telefone, status')
+                .in('telefone', telefones);
+
+        const statusMap = {};
+        (statusExistentes || []).forEach(s => { statusMap[s.telefone] = s.status; });
+
+        // "Em aberto" = sem entrada em status_de_leads OU ainda com status 'novo'
+        return telefones.filter(t => !statusMap[t] || statusMap[t] === 'novo').length;
+}
+
+async function enviarLembreteStatusVendedor() {
+        for (const [nome, numero] of [
+                ['Rebecca', process.env.NUMERO_REBECCA],
+                ['Paulo', process.env.NUMERO_PAULO],
+                ['Taynara', process.env.NUMERO_TAYNARA]
+        ]) {
+                if (!numero) continue;
+                try {
+                        const total = await contarLeadsAbertosPorVendedor(nome);
+                        if (total === 0) {
+                                console.log(`✅ ${nome}: nenhum lead em aberto, lembrete semanal não enviado.`);
+                                continue;
+                        }
+                        await sendTemplate(numero, 'alerta_status_vendedor', [nome, String(total)]);
+                        // Texto exato do template aprovado na Meta, com as variáveis já substituídas
+                        const textoTemplate = `Oi, ${nome}! Você tem ${total} lead(s) com atendimento pendente no CRM. Acesse para registrar o status de cada um.`;
+                        await salvarMensagem(numero, textoTemplate, 'sistema', nome.toLowerCase(), 'lembrete_status_semanal');
+                        console.log(`🔔 Lembrete semanal de status enviado pra ${nome}: ${total} lead(s) em aberto`);
+                } catch (e) {
+                        console.error(`❌ Erro ao enviar lembrete semanal de status pra ${nome}:`, e.response?.data || e.message);
+                }
+        }
+}
+
+function agendarLembreteStatusVendedor() {
+        function msAteProximaSegunda13UTC() {
+                const agora = new Date();
+                const proxima = new Date(agora);
+                // Avança até a próxima segunda (dia 1)
+                const diasAteSegunda = (1 - proxima.getUTCDay() + 7) % 7;
+                proxima.setUTCDate(proxima.getUTCDate() + diasAteSegunda);
+                proxima.setUTCHours(13, 0, 0, 0); // 10h BRT = 13h UTC
+                // Se já passou (segunda mas depois das 13h UTC), pega a próxima semana
+                if (proxima <= agora) proxima.setUTCDate(proxima.getUTCDate() + 7);
+                return proxima - agora;
+        }
+
+        function agendar() {
+                const ms = msAteProximaSegunda13UTC();
+                console.log(`⏰ Lembrete semanal de status agendado em ${Math.round(ms / 60000)} minutos`);
+                setTimeout(() => {
+                        enviarLembreteStatusVendedor();
+                        agendar(); // reagenda para a próxima segunda
+                }, ms);
+        }
+
+        agendar();
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 // ── Lembrete de leads pausados ───────────────────────────────────────────────
 async function checkLeadsPausados() {
         try {
@@ -2779,8 +2767,15 @@ async function classificarLeadsAntigos() {
                         const status = await classificarLeadIA(texto);
                         if (!status) { contagem.erro++; continue; }
 
+                        const updatePayload = { status };
+                        // Marca o momento da transição pra 'perdido' — usado pela pesquisa de
+                        // feedback (enviarPesquisasLeadsPerdidos), que só dispara 24h depois disso.
+                        if (status === 'perdido') {
+                                updatePayload.perdido_em = new Date().toISOString();
+                                updatePayload.feedback_perda_enviado = false;
+                        }
                         await supabase.from('status_de_leads')
-                                .update({ status })
+                                .update(updatePayload)
                                 .eq('telefone', lead.telefone);
 
                         contagem[status] = (contagem[status] || 0) + 1;
@@ -2797,116 +2792,90 @@ async function classificarLeadsAntigos() {
         console.log(`✅ Classificação concluída:`, contagem);
 }
 
-// ── Alerta interativo de leads "novo" com ≤15 dias (pergunta ao vendedor) ────
-async function enviarAlertaVendedor(nomeVendedor, numeroVendedor) {
-        if (!numeroVendedor) return;
-
-        try {
-                // Janela: leads com último contato entre 7 e 30 dias atrás
-                // Menos de 7 dias → cedo demais para perguntar
-                // Mais de 30 dias → classificarLeadsAntigos já vai tratar como "perdido"
-                const limite7d  = new Date(Date.now() -  7 * 24 * 60 * 60 * 1000).toISOString();
-                const limite30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-
-                // Busca leads do vendedor via leads_resumo (fonte correta do campo vendedor)
-                const { data: leadsDoVendedor } = await supabase
-                        .from('leads_resumo')
-                        .select('telefone, vendedor, ultimo_contato')
-                        .ilike('vendedor', `%${nomeVendedor}%`)
-                        .gte('ultimo_contato', limite30d)   // não mais antigo que 30 dias
-                        .lte('ultimo_contato', limite7d)    // sem contato há pelo menos 7 dias
-                        .eq('tem_msg_cliente', true)
-                        .order('ultimo_contato', { ascending: true })
-                        .limit(50);
-
-                if (!leadsDoVendedor || leadsDoVendedor.length === 0) {
-                        console.log(`✅ ${nomeVendedor}: nenhum lead recente`);
-                        return;
-                }
-
-                // Dos leads do vendedor, pega os que têm status "novo" ou sem status
-                const telefones = leadsDoVendedor.map(l => l.telefone);
-                const { data: statusExistentes } = await supabase
-                        .from('status_de_leads')
-                        .select('telefone, status, nome')
-                        .in('telefone', telefones);
-
-                const statusMap = {};
-                (statusExistentes || []).forEach(s => { statusMap[s.telefone] = s; });
-
-                // Inclui leads com status "novo" OU sem entrada em status_de_leads
-                const leadsNovos = leadsDoVendedor
-                        .filter(l => !statusMap[l.telefone] || statusMap[l.telefone].status === 'novo')
-                        .map(l => ({
-                                telefone: l.telefone,
-                                nome: statusMap[l.telefone]?.nome || 'sem nome'
-                        }));
-
-                if (leadsNovos.length === 0) {
-                        console.log(`✅ ${nomeVendedor}: nenhum lead "novo" para atualizar`);
-                        return;
-                }
-
-                // Monta fila: primeiro lead vira "atual", o resto fica na fila
-                const todos = leadsNovos.map(l => ({ telefone: l.telefone, nome: l.nome || 'sem nome' }));
-                const numNorm = normalizePhone(numeroVendedor);
-                pendentesAtualizacao[numNorm] = { atual: todos[0], fila: todos.slice(1), aguardandoMotivo: false, motivoStatus: null };
-
-                // Envia template por lead (abre janela de 24h e já mostra o lead)
-                const primeiro = todos[0];
-                // Variáveis posicionais: {{1}} vendedor, {{2}} lead nome, {{3}} lead telefone
-                await sendTemplate(numeroVendedor, 'atualizar_status_lead', [
-                        nomeVendedor,
-                        primeiro.nome || 'sem nome',
-                        primeiro.telefone
-                ]);
-                // Texto exato do template aprovado na Meta, com as variáveis já substituídas —
-                // assim o CRM mostra a mensagem real que o vendedor recebeu, não um placeholder cru.
-                const textoTemplateStatus = `Olá ${nomeVendedor}! 👋\n\n` +
-                        `O lead ${primeiro.nome || 'sem nome'} (${primeiro.telefone}) está há mais de 7 dias sem atualização.\n\n` +
-                        `Como ficou? Responda com uma das opções abaixo:\n\n` +
-                        `✅ matriculado\n🔵 em andamento\n❌ perdido – motivo\n🔵 pausado – motivo\n🎓 aluno\n\n` +
-                        `Se perdido ou pausado, inclua o motivo na mesma mensagem.\n` +
-                        `Ex: perdido – sem interesse no momento`;
-                salvarMensagem(numeroVendedor, textoTemplateStatus, 'sistema', nomeVendedor.toLowerCase(), 'alerta_vendedor');
-                console.log(`🔔 Alerta de status enviado para ${nomeVendedor}: ${leadsNovos.length} lead(s)`);
-        } catch (err) {
-                console.error(`❌ Erro ao enviar alerta para ${nomeVendedor}:`, err.message);
-        }
-}
-
-// Pausa segura entre envios WhatsApp para evitar ban (200 segundos)
-const PAUSA_WHATSAPP_MS = 200 * 1000;
-
-// ── Processa backlog: IA para leads antigos + pergunta ao vendedor para recentes
+// ── Processa backlog: IA classifica leads antigos (>15 dias) e avisa a gerente ──
+// Antes também mandava um prompt interativo pro vendedor perguntando "como ficou"
+// cada lead recente (≤15 dias) — removido porque os vendedores não respondiam,
+// virando só ruído no WhatsApp deles sem nenhuma atualização de status real. O
+// status agora é atualizado direto pelo vendedor no CRM.
 async function processarBacklogNovos() {
-        // 1. Leads > 15 dias → IA classifica e avisa gerente
         await classificarLeadsAntigos();
+}
+// ────────────────────────────────────────────────────────────────────────────
 
-        // 2. Leads ≤ 15 dias → pergunta ao vendedor um por um
-        //    200s de pausa entre cada envio para não acionar o ban do WhatsApp
-        for (const [nome, numEnv] of [['Rebecca', process.env.NUMERO_REBECCA], ['Paulo', process.env.NUMERO_PAULO], ['Taynara', process.env.NUMERO_TAYNARA]]) {
-                if (!numEnv) continue;
-                console.log(`⏳ Aguardando ${PAUSA_WHATSAPP_MS / 1000}s antes de enviar para ${nome}...`);
-                await new Promise(r => setTimeout(r, PAUSA_WHATSAPP_MS));
-                await enviarAlertaVendedor(nome, numEnv);
+// ── Pesquisa de "lead perdido" ──────────────────────────────────────────────
+// 24h depois do status virar 'perdido' (seja o vendedor marcando no CRM, seja a IA
+// classificando por inatividade em classificarLeadsAntigos), manda um TEMPLATE
+// aprovado pela Meta perguntando o que o lead achou do atendimento e o motivo de não
+// ter fechado a matrícula. Precisa ser template (não texto livre): por definição um
+// lead "perdido" já está inativo, então a janela de 24h quase sempre está fechada —
+// template é o único jeito confiável de alcançar ele mesmo assim. Sai pelo número
+// PRINCIPAL do bot.
+async function enviarPesquisasLeadsPerdidos() {
+        const limite24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+        const { data: leads, error } = await supabase
+                .from('status_de_leads')
+                .select('telefone, nome, vendedor, perdido_em')
+                .eq('status', 'perdido')
+                .eq('feedback_perda_enviado', false)
+                .not('perdido_em', 'is', null)
+                .lte('perdido_em', limite24h);
+
+        if (error) {
+                console.error('❌ Erro ao buscar leads perdidos p/ pesquisa:', error.message);
+                return;
+        }
+        if (!leads || leads.length === 0) return;
+
+        console.log(`📮 Enviando pesquisa de feedback (template) pra ${leads.length} lead(s) perdido(s)...`);
+
+        for (const lead of leads) {
+                try {
+                        const nomeLead = lead.nome || '';
+                        const textoTemplate = `Oi, ${nomeLead || 'tudo bem'}! Aqui é do CNA Recreio 😊 Notamos que você não seguiu com a matrícula. Pode nos contar rapidinho o que achou do nosso atendimento e o motivo? Isso nos ajuda muito a melhorar 🙏`;
+
+                        await sendTemplate(lead.telefone, 'pesquisa_lead_perdido', [nomeLead]);
+                        await salvarMensagem(lead.telefone, textoTemplate, 'sistema', 'bot', 'pesquisa_perdido');
+                        aguardandoFeedbackPerdido[lead.telefone] = { vendedorSalvar: 'bot' };
+
+                        // Só marca como enviado DEPOIS do sendTemplate ter sucesso — se falhar
+                        // (ex: template ainda não aprovado), tenta de novo no próximo sweep.
+                        await supabase.from('status_de_leads')
+                                .update({ feedback_perda_enviado: true })
+                                .eq('telefone', lead.telefone);
+
+                        console.log(`📮 Pesquisa de feedback enviada pra ${lead.telefone}`);
+                        await new Promise(r => setTimeout(r, 1000));
+                } catch (err) {
+                        console.error(`❌ Erro ao enviar pesquisa pra ${lead.telefone}:`, err.response?.data || err.message);
+                }
         }
 }
 
-// Agenda alerta para um vendedor num horário UTC específico
-function agendarAlertaVendedor(nomeVendedor, numeroVendedor, horaUTC) {
-        const agora = new Date();
-        const proxima = new Date(agora);
-        proxima.setUTCHours(horaUTC, 0, 0, 0);
-        if (proxima <= agora) proxima.setUTCDate(proxima.getUTCDate() + 1);
-
-        const msAteProxima = proxima - agora;
-        console.log(`⏰ Alerta ${nomeVendedor} agendado em ${Math.round(msAteProxima / 60000)} minutos`);
-
-        setTimeout(() => {
-                enviarAlertaVendedor(nomeVendedor, numeroVendedor);
-                setInterval(() => enviarAlertaVendedor(nomeVendedor, numeroVendedor), 24 * 60 * 60 * 1000);
-        }, msAteProxima);
+// Agenda o disparo diário (seg-sex, 13h BRT) da pesquisa de leads perdidos, em vez de
+// ficar checando a cada 30min. Mesmo padrão de self-reschedule usado no lembrete
+// semanal de status dos vendedores.
+function agendarPesquisasLeadsPerdidos() {
+        function msAteProximoDisparo() {
+                const agora = new Date();
+                const proximo = new Date(agora);
+                proximo.setUTCHours(16, 0, 0, 0); // 13h BRT = 16h UTC
+                if (proximo <= agora) proximo.setUTCDate(proximo.getUTCDate() + 1);
+                // Pula fim de semana (domingo=0, sábado=6)
+                while (proximo.getUTCDay() === 0 || proximo.getUTCDay() === 6) {
+                        proximo.setUTCDate(proximo.getUTCDate() + 1);
+                }
+                return proximo - agora;
+        }
+        function agendar() {
+                const ms = msAteProximoDisparo();
+                console.log(`⏰ Pesquisa de leads perdidos agendada em ${Math.round(ms / 60000)} minutos`);
+                setTimeout(() => {
+                        enviarPesquisasLeadsPerdidos();
+                        agendar();
+                }, ms);
+        }
+        agendar();
 }
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -2990,6 +2959,23 @@ async function gerarRelatorioMensal() {
                                 msgs.forEach(m => {
                                         conversasTexto += `[${m.de}]: ${m.mensagem.substring(0, 200)}\n`;
                                 });
+
+                                // Feedback direto do lead sobre por que não fechou (pesquisa pós-"perdido")
+                                // — busca à parte porque a conversa às vezes é longa e o feedback,
+                                // vindo depois, ficaria de fora do limit(15) acima.
+                                if (st?.status === 'perdido') {
+                                        const { data: feedback } = await supabase
+                                                .from('conversas')
+                                                .select('mensagem, de')
+                                                .eq('telefone', lead.telefone)
+                                                .eq('tipo', 'feedback_perdido')
+                                                .eq('de', 'cliente')
+                                                .order('created_at', { ascending: true })
+                                                .limit(1);
+                                        if (feedback && feedback.length > 0) {
+                                                conversasTexto += `[FEEDBACK DO LEAD sobre por que não fechou]: ${feedback[0].mensagem.substring(0, 300)}\n`;
+                                        }
+                                }
                         }
                 }
                 const total       = leadsDoMes?.length || 0;
@@ -3040,7 +3026,12 @@ Gere um relatório com exatamente estas seções:
      não personaliza a mensagem, esquece de pedir o fechamento).
    - Sugestões práticas: 2-3 ações específicas pra esse vendedor melhorar atendimento e
      fechar mais matrículas no próximo mês.
-3. PRINCIPAIS OBJEÇÕES DOS LEADS (o que mais apareceu nas conversas, geral)
+   Quando um lead tiver a linha "[FEEDBACK DO LEAD sobre por que não fechou]", use esse
+   relato do PRÓPRIO lead como fonte principal (é mais confiável que inferir só pela
+   conversa do vendedor) — cite o que ele disse ao avaliar pontos a melhorar do vendedor.
+3. PRINCIPAIS OBJEÇÕES DOS LEADS (o que mais apareceu nas conversas, geral — dê peso
+   maior às objeções que vieram direto do feedback do lead, não só do que o vendedor
+   registrou)
 4. PADRÕES IDENTIFICADOS (horários, perfil dos leads, o que funcionou)
 5. RECOMENDAÇÕES PARA O PRÓXIMO MÊS (3 a 5 ações práticas e concretas, gerais pra equipe)
 
@@ -3174,9 +3165,9 @@ app.listen(PORT, () => {
         carregarRodizio();
         // Agenda resumo diário às 8h BRT
         agendarResumoDiario();
-        // Alerta de leads sem status: Rebecca às 12h BRT (15h UTC), Paulo às 17h BRT (20h UTC)
-        agendarAlertaVendedor('Rebecca',  process.env.NUMERO_REBECCA,  15);
-        agendarAlertaVendedor('Paulo',    process.env.NUMERO_PAULO,    20);
-        agendarAlertaVendedor('Taynara',  process.env.NUMERO_TAYNARA,  17);
         agendarLembreteEscala();
+        // Lembrete semanal de leads sem status pros vendedores, toda segunda 10h BRT
+        agendarLembreteStatusVendedor();
+        // Pesquisa de feedback de leads perdidos, seg-sex às 13h BRT
+        agendarPesquisasLeadsPerdidos();
 });
