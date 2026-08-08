@@ -504,6 +504,21 @@ async function askGroq(telefone, mensagem, apiKey, systemPromptFinal) {
         return response.data.choices[0].message.content;
 }
 
+// Rede de segurança: a instrução no prompt pra "não cortar itens da lista" ajuda, mas
+// não garante 100% — modelo de linguagem pode continuar parafraseando e esquecendo um
+// item mesmo assim (confirmado na prática mais de uma vez com o curso de Programação e
+// Robótica). Se a entrada "cursos" da base de conhecimento entrou no contexto dessa
+// resposta e o texto gerado não menciona Robótica, completa na mão — assim o cliente
+// nunca deixa de saber que esse curso existe, independente do que a IA decidiu escrever.
+function garantirMencaoCursos(ragResultados, reply) {
+        const entrouCursos = (ragResultados || []).some(r => r.categoria === 'cursos');
+        if (!entrouCursos) return reply;
+        // Checa com e sem acento (o modelo às vezes escreve "Robotica" sem acentuar)
+        const lower = reply.toLowerCase();
+        if (lower.includes('robótic') || lower.includes('robotic')) return reply; // já mencionou, não mexe
+        return `${reply}\n\n(Também temos curso de Programação e Robótica! 🤖)`;
+}
+
 async function askAI(telefone, mensagem) {
         if (!conversas[telefone]) conversas[telefone] = [];
         conversas[telefone].push({ role: 'user', content: mensagem });
@@ -582,7 +597,8 @@ IMPORTANTE: Esses dados já foram coletados. NÃO peça nome, idade ou horário 
         // Tentativa 1 — Groq chave principal
         if (process.env.GROQ_API_KEY) {
                 try {
-                        const reply = await askGroq(telefone, mensagem, process.env.GROQ_API_KEY, systemPromptFinal);
+                        let reply = await askGroq(telefone, mensagem, process.env.GROQ_API_KEY, systemPromptFinal);
+                        reply = garantirMencaoCursos(ragResultados, reply);
                         conversas[telefone].push({ role: 'assistant', content: reply });
                         botStatus.modelo = 'groq';
                         return reply;
@@ -595,7 +611,8 @@ IMPORTANTE: Esses dados já foram coletados. NÃO peça nome, idade ou horário 
         // Tentativa 2 — Groq chave reserva
         if (process.env.GROQ_API_KEY_2) {
                 try {
-                        const reply = await askGroq(telefone, mensagem, process.env.GROQ_API_KEY_2, systemPromptFinal);
+                        let reply = await askGroq(telefone, mensagem, process.env.GROQ_API_KEY_2, systemPromptFinal);
+                        reply = garantirMencaoCursos(ragResultados, reply);
                         conversas[telefone].push({ role: 'assistant', content: reply });
                         botStatus.modelo = 'groq_2';
                         console.log('✅ Usando Groq chave 2');
@@ -611,7 +628,13 @@ IMPORTANTE: Esses dados já foram coletados. NÃO peça nome, idade ou horário 
         botStatus.modelo = 'gemini';
         botStatus.fallbacksHoje++;
         try {
-                const reply = await askGemini(telefone, mensagem, systemPromptFinal);
+                let reply = await askGemini(telefone, mensagem, systemPromptFinal);
+                reply = garantirMencaoCursos(ragResultados, reply);
+                // askGemini já empurrou a resposta original pro histórico — corrige aqui
+                // também, senão a IA "lembraria" de uma versão sem o curso completo.
+                if (conversas[telefone]?.length > 0) {
+                        conversas[telefone][conversas[telefone].length - 1].content = reply;
+                }
                 return reply;
         } catch (geminiErr) {
                 console.error('❌ Todos os modelos falharam.', geminiErr.message);
@@ -1228,10 +1251,22 @@ app.post('/webhook', async (req, res) => {
         }
 
         if (mensagemEhMidia) {
-                // Mídia pro número principal do bot: só registra, não manda pra IA
-                // (a IA não teria como responder algo coerente sobre a mídia em si).
+                // Mídia pro número principal do bot: registra, mas a IA não consegue "ler" o
+                // conteúdo em si (áudio, imagem, etc). Antes ficava em silêncio — o cliente
+                // mandava um áudio e via a mensagem como enviada, sem nenhuma resposta, achando
+                // que tinha caído no vácuo. Agora avisa e pede pra escrever em texto.
                 await salvarMensagem(telefone, mensagem, 'cliente', null, 'desconhecido', midiaUrl);
                 console.log(`📎 Mídia recebida no bot principal de ${telefone}: ${mensagem}`);
+
+                const avisoMidia = message.type === 'audio'
+                        ? 'Ainda não consigo ouvir áudios por aqui 🙏 Pode escrever sua mensagem em texto?'
+                        : 'Recebi seu arquivo, mas ainda não consigo abrir esse tipo de conteúdo por aqui 🙏 Pode me contar em texto o que você gostaria de saber?';
+                try {
+                        await sendWhatsApp(telefone, avisoMidia);
+                        await salvarMensagem(telefone, avisoMidia, 'bot', null, 'desconhecido');
+                } catch (e) {
+                        console.error(`❌ Falha ao avisar ${telefone} sobre mídia não suportada:`, e.response?.data || e.message);
+                }
                 return;
         }
 
