@@ -71,6 +71,17 @@ const pausaAdminManual = {};
 // { '5521999999999': { atual: {telefone, nome}, fila: [...restantes] } }
 const pendentesAtualizacao = {};
 
+// Relatórios (resumo diário / mensal) que já mandaram o template mas cujo conteúdo
+// detalhado (texto livre) está esperando o destinatário responder pra abrir a janela
+// de 24h. Chave = telefone. Valor = array com o(s) bloco(s) mais recentes a enviar
+// assim que ele mandar qualquer mensagem. Evita "chutar" o envio 1.5-3s depois
+// torcendo pra janela já estar aberta — que falhava silenciosamente pra quem não
+// tinha conversado com o bot recentemente (ex: um número novo, como o do Lucas na
+// primeira vez). Uma pendência nova SUBSTITUI a anterior desse telefone — se ele
+// ficar dias sem responder o resumo diário, ao responder recebe só o mais recente,
+// não uma enxurrada de dias antigos e desatualizados.
+const relatoriosPendentes = {};
+
 // Rodízio "justo": guarda quando cada vendedor recebeu o último lead (qualquer
 // tipo de atribuição — exclusiva ou por rodízio), persistido no Supabase pra não
 // resetar a cada deploy/restart do Railway. Quando 2+ vendedores estão de plantão
@@ -509,7 +520,12 @@ async function askAI(telefone, mensagem) {
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 INFORMAÇÕES VERIFICADAS DA ESCOLA — USE APENAS ESTAS, NÃO INVENTE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${contextoRAG}`;
+${contextoRAG}
+
+Ao responder usando o texto acima: reproduza as informações por completo, sem resumir
+nem cortar itens de uma lista. Se o texto menciona 3 cursos, cite os 3 — nunca só 2. Não
+parafraseie nomes próprios ou palavras específicas (ex: "Oferecemos", nomes de cursos) —
+copie a grafia exatamente como está escrita acima.`;
                 console.log(`🧠 Contexto RAG injetado (${ragResultados.length} itens)`);
         }
 
@@ -722,19 +738,38 @@ async function sendTemplateGerente(templateName, variables = []) {
         }
 }
 
-// Espelha mensagem de texto livre (não-template) pra gerente e pro Lucas. Diferente do
-// template, isso EXIGE que o número de destino já tenha uma janela de 24h aberta com o
-// bot (ou seja, o Lucas precisa ter mandado alguma mensagem pro bot recentemente) —
-// mesma regra que já vale hoje pra gerente.
-async function sendWhatsAppGerente(mensagem) {
-        await sendWhatsApp(NUMERO_GERENTE, mensagem);
-        if (NUMERO_LUCAS) {
-                try {
-                        await sendWhatsApp(NUMERO_LUCAS, mensagem);
-                } catch (e) {
-                        console.error(`⚠️ Falha ao espelhar mensagem pro Lucas (provavelmente janela de 24h fechada):`, e.response?.data || e.message);
-                }
+// Tenta mandar texto livre (não-template) agora. Se der certo, salva no CRM e devolve
+// null. Se a janela de 24h estiver fechada, NÃO marca como falha definitiva — devolve
+// o item pra quem chamou decidir o que fazer com a fila de pendências (ver
+// definirPendentes logo abaixo). Não mexe em relatoriosPendentes diretamente: um
+// relatório mensal tem vários blocos e todos precisam ser tratados como uma unidade só,
+// senão cada bloco que falhasse ia "pisar" no anterior e perder pedaço do relatório.
+async function enviarLivreOuItemPendente(telefone, texto, tipoSalvar, vendedorSalvar = 'bot') {
+        try {
+                await sendWhatsApp(telefone, texto);
+                await salvarMensagem(telefone, texto, 'sistema', vendedorSalvar, tipoSalvar);
+                return null;
+        } catch (e) {
+                console.log(`📬 Bloco adiado pra ${telefone} (janela de 24h fechada).`, e.response?.data || e.message);
+                return { texto, tipoSalvar, vendedorSalvar };
         }
+}
+
+// Substitui TODA a fila de pendências desse telefone pelos itens do envio atual — um
+// relatório novo sempre vence qualquer pendência antiga (não acumula dias/meses velhos),
+// mas todos os blocos de UM MESMO relatório ficam juntos, entregues na mesma ordem.
+// Substitui só a pendência do MESMO TIPO (ex: 'resumo_diario_detalhado' ou
+// 'relatorio_mensal_detalhado'), preservando pendências de outro tipo pro mesmo
+// telefone. Isso importa porque no dia 1 do mês o resumo diário e o relatório mensal
+// podem ficar pendentes juntos (se a janela de 24h estiver fechada nos dois) — sem essa
+// separação, um "sobrescrevia" o outro silenciosamente porque os dois tentavam gravar
+// na mesma fila (relatoriosPendentes[telefone]).
+function definirPendentes(telefone, tipoSalvar, itens) {
+        const outrosTipos = (relatoriosPendentes[telefone] || []).filter(i => i.tipoSalvar !== tipoSalvar);
+        const validos = (itens || []).filter(Boolean);
+        const combinado = [...outrosTipos, ...validos];
+        if (combinado.length > 0) relatoriosPendentes[telefone] = combinado;
+        else delete relatoriosPendentes[telefone];
 }
 
 async function notificarVendedor(telefone, vendedor) {
@@ -1215,6 +1250,24 @@ app.post('/webhook', async (req, res) => {
         );
         if (numerosInternosGestao.has(telefone)) {
                 await salvarMensagem(telefone, mensagem, 'cliente', 'Coordenação', 'resposta_gerente');
+
+                // Essa mensagem acabou de abrir a janela de 24h — se tinha conteúdo detalhado
+                // (resumo diário/relatório mensal) esperando pra ser enviado, manda agora.
+                const pendentes = relatoriosPendentes[telefone];
+                if (pendentes && pendentes.length > 0) {
+                        delete relatoriosPendentes[telefone];
+                        for (const item of pendentes) {
+                                try {
+                                        await sendWhatsApp(telefone, item.texto);
+                                        await salvarMensagem(telefone, item.texto, 'sistema', item.vendedorSalvar || 'bot', item.tipoSalvar);
+                                        await new Promise(r => setTimeout(r, 1200));
+                                } catch (e) {
+                                        console.error(`❌ Falha ao enviar conteúdo adiado pra ${telefone}:`, e.response?.data || e.message);
+                                }
+                        }
+                        console.log(`📬 ${pendentes.length} mensagem(ns) adiada(s) entregue(s) pra ${telefone} após resposta.`);
+                }
+
                 console.log(`👩‍💼 Mensagem de número interno de gestão (${telefone}): "${mensagem}" — só registrada, sem fluxo de lead.`);
                 return;
         }
@@ -2463,16 +2516,22 @@ async function enviarResumoDiario() {
                 await salvarMensagem(NUMERO_GERENTE, textoTemplateResumo, 'sistema', 'bot', 'resumo_diario');
 
                 await new Promise(r => setTimeout(r, 3000));
-                try {
-                        await sendWhatsAppGerente(msg);
-                        console.log(`📊 Resumo diário (detalhado) enviado para a gerente`);
-                        // Só registra a mensagem detalhada no CRM se ela realmente foi entregue —
-                        // assim o CRM nunca mostra uma mensagem que a gerente não recebeu de verdade.
-                        await salvarMensagem(NUMERO_GERENTE, msg, 'sistema', 'bot', 'resumo_diario_detalhado');
-                } catch (errMsg) {
-                        // Só falha se a janela de 24h estiver fechada (gerente não respondeu o template) —
-                        // mas os números-chave já chegaram garantidos via template, então não é mais um apagão total.
-                        console.error(`⚠️ Detalhamento completo não enviado (janela de 24h fechada — a gerente precisa responder o template pra liberar). Números-chave já foram entregues via template.`, errMsg.response?.data || errMsg.message);
+
+                // Tenta mandar na hora; se a janela de 24h estiver fechada, fica guardado e
+                // entrega sozinho assim que ela (ou o Lucas) responder qualquer mensagem —
+                // números-chave já chegaram garantidos via template de qualquer forma. A
+                // pendência de hoje substitui qualquer pendência de dias anteriores.
+                const itemGerente = await enviarLivreOuItemPendente(NUMERO_GERENTE, msg, 'resumo_diario_detalhado');
+                definirPendentes(NUMERO_GERENTE, 'resumo_diario_detalhado', itemGerente ? [itemGerente] : []);
+                console.log(itemGerente
+                        ? `📊 Resumo diário (detalhado) adiado pra gerente — janela de 24h fechada.`
+                        : `📊 Resumo diário (detalhado) enviado para a gerente`);
+                if (NUMERO_LUCAS) {
+                        const itemLucas = await enviarLivreOuItemPendente(NUMERO_LUCAS, msg, 'resumo_diario_detalhado');
+                        definirPendentes(NUMERO_LUCAS, 'resumo_diario_detalhado', itemLucas ? [itemLucas] : []);
+                        console.log(itemLucas
+                                ? `📊 Resumo diário (detalhado) adiado pro Lucas — janela de 24h fechada.`
+                                : `📊 Resumo diário (detalhado) enviado pro Lucas`);
                 }
         } catch (err) {
                 console.error('❌ Erro ao enviar resumo diário:', err.message);
@@ -2972,24 +3031,25 @@ Seja objetivo. Máximo 600 palavras no total.`;
                 await salvarMensagem(NUMERO_GERENTE, '[Template: relatorio_mensal] Seu relatório mensal está pronto — os detalhes chegam a seguir.', 'sistema', 'bot', 'relatorio_mensal');
                 await new Promise(r => setTimeout(r, 1500));
 
-                // Manda bloco por bloco e só registra no CRM o que realmente foi entregue —
-                // se a janela de 24h fechar no meio (gerente não responde há dias), os blocos
-                // restantes falham e não entram no CRM como se tivessem chegado.
-                const blocosEntregues = [];
-                try {
-                        for (const bloco of blocos) {
-                                await sendWhatsAppGerente(bloco);
-                                blocosEntregues.push(bloco);
-                                await new Promise(r => setTimeout(r, 1500)); // pausa entre mensagens
+                // Manda bloco por bloco. Os blocos que não entregam na hora (janela de 24h
+                // fechada) são acumulados localmente e só viram pendência no final, todos
+                // juntos — assim um relatório de 3 blocos não perde os 2 primeiros quando o
+                // 3º "substitui" a fila (definirPendentes troca tudo de uma vez só).
+                let entreguesGerente = 0;
+                const pendentesGerente = [];
+                const pendentesLucas = [];
+                for (const bloco of blocos) {
+                        const itemG = await enviarLivreOuItemPendente(NUMERO_GERENTE, bloco, 'relatorio_mensal_detalhado');
+                        if (itemG) pendentesGerente.push(itemG); else entreguesGerente++;
+                        if (NUMERO_LUCAS) {
+                                const itemL = await enviarLivreOuItemPendente(NUMERO_LUCAS, bloco, 'relatorio_mensal_detalhado');
+                                if (itemL) pendentesLucas.push(itemL);
                         }
-                } catch (errBloco) {
-                        console.error(`⚠️ Relatório mensal: só ${blocosEntregues.length}/${blocos.length} bloco(s) entregues (janela de 24h fechada?).`, errBloco.response?.data || errBloco.message);
+                        await new Promise(r => setTimeout(r, 1500)); // pausa entre mensagens
                 }
-                if (blocosEntregues.length > 0) {
-                        await salvarMensagem(NUMERO_GERENTE, blocosEntregues.join('\n\n'), 'sistema', 'bot', 'relatorio_mensal_detalhado');
-                }
-
-                console.log(`📋 Relatório mensal enviado (${blocosEntregues.length}/${blocos.length} bloco(s) entregues)`);
+                definirPendentes(NUMERO_GERENTE, 'relatorio_mensal_detalhado', pendentesGerente);
+                if (NUMERO_LUCAS) definirPendentes(NUMERO_LUCAS, 'relatorio_mensal_detalhado', pendentesLucas);
+                console.log(`📋 Relatório mensal: ${entreguesGerente}/${blocos.length} bloco(s) entregues na hora pra gerente (o resto fica pendente até ela responder).`);
         } catch (err) {
                 console.error('❌ Erro ao gerar relatório mensal:', err.message);
         } finally {
