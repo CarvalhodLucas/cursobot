@@ -38,6 +38,9 @@ app.use((req, res, next) => {
 
 const NUMERO_COORDENACAO = process.env.NUMERO_COORDENACAO;
 const NUMERO_GERENTE = process.env.NUMERO_GERENTE;
+// Número do Lucas — espelha tudo que a gerente recebe (resumo diário, relatório
+// mensal, lembrete de escala). Configurar em NUMERO_LUCAS nas variáveis do Railway.
+const NUMERO_LUCAS = process.env.NUMERO_LUCAS;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -512,7 +515,20 @@ ${contextoRAG}`;
 
         // Após injetar o RAG, injetar também os dados já coletados
         const dados = dadosLead[telefone];
-        if (dados && dados.confirmado) {
+        if (dados && dados.jaAluno) {
+                // Cliente já foi classificado como ALUNO nesta conversa (uma mensagem anterior
+                // mencionou aula/mensalidade/professor/etc. e o bot já avisou que ia encaminhar
+                // pra coordenação). Sem essa memória, um "oi" isolado logo depois fazia a IA
+                // voltar pro fluxo de lead do zero, perguntando "você já é aluno?" de novo.
+                systemPromptFinal += `
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STATUS DO ATENDIMENTO — JÁ IDENTIFICADO COMO ALUNO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Este cliente já foi identificado como ALUNO nesta conversa e a coordenação já foi avisada.
+NÃO pergunte novamente "você já é aluno ou tem interesse em se matricular?" nem reinicie o fluxo de lead.
+Se ele mandar uma nova mensagem (mesmo que só "oi"), responda apenas que a coordenação já foi acionada e vai retornar em breve, ou tire a dúvida pontual dele se houver uma.`;
+        } else if (dados && dados.confirmado) {
                 // Lead já encerrado — modo pós-confirmação
                 systemPromptFinal += `
 
@@ -689,6 +705,35 @@ async function sendTemplate(telefone, templateName, variables = []) {
         } catch (err) {
                 console.error(`❌ Erro ao enviar template "${templateName}":`, err.response?.data || err.message);
                 throw err;
+        }
+}
+
+// Envia o mesmo template pra gerente E, se NUMERO_LUCAS estiver configurado, também
+// pro Lucas — templates aprovados ignoram a janela de 24h, então chegam sempre,
+// mesmo que ele nunca tenha mandado mensagem pro bot antes.
+async function sendTemplateGerente(templateName, variables = []) {
+        await sendTemplate(NUMERO_GERENTE, templateName, variables);
+        if (NUMERO_LUCAS) {
+                try {
+                        await sendTemplate(NUMERO_LUCAS, templateName, variables);
+                } catch (e) {
+                        console.error(`⚠️ Falha ao espelhar template "${templateName}" pro Lucas:`, e.response?.data || e.message);
+                }
+        }
+}
+
+// Espelha mensagem de texto livre (não-template) pra gerente e pro Lucas. Diferente do
+// template, isso EXIGE que o número de destino já tenha uma janela de 24h aberta com o
+// bot (ou seja, o Lucas precisa ter mandado alguma mensagem pro bot recentemente) —
+// mesma regra que já vale hoje pra gerente.
+async function sendWhatsAppGerente(mensagem) {
+        await sendWhatsApp(NUMERO_GERENTE, mensagem);
+        if (NUMERO_LUCAS) {
+                try {
+                        await sendWhatsApp(NUMERO_LUCAS, mensagem);
+                } catch (e) {
+                        console.error(`⚠️ Falha ao espelhar mensagem pro Lucas (provavelmente janela de 24h fechada):`, e.response?.data || e.message);
+                }
         }
 }
 
@@ -890,7 +935,7 @@ async function getHistorico(telefone) {
                 // Busca as últimas 20 mensagens ordenadas por data descendente
                 const { data, error } = await supabase
                         .from('conversas')
-                        .select('mensagem, de')
+                        .select('mensagem, de, tipo')
                         .eq('telefone', telefone)
                         .order('created_at', { ascending: false })
                         .limit(20);
@@ -921,6 +966,11 @@ async function getHistorico(telefone) {
                                         if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].trim();
                                         if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].trim();
                                 }
+                                // Se em algum momento essa conversa já foi classificada como aluno,
+                                // mantém a memória mesmo depois de um restart do Railway — senão a
+                                // flag jaAluno (só em RAM) se perdia e a IA voltava a perguntar
+                                // "você já é aluno?" depois de qualquer deploy.
+                                if (m.tipo === 'aluno') dadosLead[telefone].jaAluno = true;
                         });
 
                         console.log(`📜 Histórico + dados carregados para ${telefone}`);
@@ -1152,6 +1202,23 @@ app.post('/webhook', async (req, res) => {
 
         if (!telefone || !mensagem) return;
 
+        // Mensagem da gerente ou do Lucas (normalmente é só resposta ao resumo diário
+        // pra abrir a janela de 24h e liberar o detalhamento, ou o relatório mensal que
+        // agora também é espelhado pro Lucas). Sem essa guarda, a resposta caía no fluxo
+        // normal de lead — passava pelo aviso de LGPD e a IA perguntava "você já é aluno
+        // ou tem interesse em se matricular?". Só registra a mensagem (mantém a janela de
+        // 24h aberta) e não aciona a IA nem o fluxo de qualificação.
+        const numerosInternosGestao = new Set(
+                [process.env.NUMERO_GERENTE, process.env.NUMERO_LUCAS]
+                        .filter(Boolean)
+                        .map(n => normalizePhone(n))
+        );
+        if (numerosInternosGestao.has(telefone)) {
+                await salvarMensagem(telefone, mensagem, 'cliente', 'Coordenação', 'resposta_gerente');
+                console.log(`👩‍💼 Mensagem de número interno de gestão (${telefone}): "${mensagem}" — só registrada, sem fluxo de lead.`);
+                return;
+        }
+
         // Atualiza status do último webhook recebido
         botStatus.ultimoWebhook = new Date().toISOString();
 
@@ -1345,16 +1412,22 @@ app.post('/webhook', async (req, res) => {
                 const reply = await askAI(telefone, mensagem);
                 let tipo = detectarTipo(mensagem, reply);
 
-                if (tipo === 'aluno' && !reengajamentoEnviado[`coord_${telefone}`]) {
-                        reengajamentoEnviado[`coord_${telefone}`] = true;
-                        vendedor = 'Coordenação';
-                        vendedorPorTelefone[telefone] = 'Coordenação';
-                        await notificarCoordenacao(telefone);
-                }
-
                 // Extração de dados da resposta do bot para memória
                 if (!dadosLead[telefone]) {
                         dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false, consentimentoDado: true };
+                }
+
+                if (tipo === 'aluno') {
+                        // Marca de forma persistente (na RAM) que esse cliente já foi tratado como
+                        // aluno nesta conversa — usado pra IA não voltar a perguntar "você já é
+                        // aluno?" numa mensagem seguinte (ver bloco jaAluno em askAI()).
+                        dadosLead[telefone].jaAluno = true;
+                        if (!reengajamentoEnviado[`coord_${telefone}`]) {
+                                reengajamentoEnviado[`coord_${telefone}`] = true;
+                                vendedor = 'Coordenação';
+                                vendedorPorTelefone[telefone] = 'Coordenação';
+                                await notificarCoordenacao(telefone);
+                        }
                 }
 
                 const nomeMatch = reply.match(/(?:👤|Nome).*?:\s*([^\n\*]+)/i);
@@ -2364,7 +2437,7 @@ async function enviarResumoDiario() {
                 // fixa do template chegava e o texto com os dados de verdade (mensagem livre, abaixo)
                 // ficava pendurado esperando uma janela que normalmente está fechada (a gerente
                 // não fala com o bot todo dia), então o "dados a seguir" nunca vinha acompanhado de nada.
-                await sendTemplate(NUMERO_GERENTE, 'resumo_diario_util', [
+                await sendTemplateGerente('resumo_diario_util', [
                         dataStr,
                         String(totalLeadsNovos),
                         String(viaBot),
@@ -2391,7 +2464,7 @@ async function enviarResumoDiario() {
 
                 await new Promise(r => setTimeout(r, 3000));
                 try {
-                        await sendWhatsApp(NUMERO_GERENTE, msg);
+                        await sendWhatsAppGerente(msg);
                         console.log(`📊 Resumo diário (detalhado) enviado para a gerente`);
                         // Só registra a mensagem detalhada no CRM se ela realmente foi entregue —
                         // assim o CRM nunca mostra uma mensagem que a gerente não recebeu de verdade.
@@ -2453,7 +2526,7 @@ function agendarLembreteEscala() {
                 const ms = msAteProximaSexta22UTC();
                 console.log(`⏰ Lembrete de escala agendado em ${Math.round(ms / 60000)} minutos`);
                 setTimeout(() => {
-                        sendTemplate(NUMERO_GERENTE, 'lembrete_escala', [{ name: 'gerente_nome', value: 'Leybian' }]);
+                        sendTemplateGerente('lembrete_escala', [{ name: 'gerente_nome', value: 'Leybian' }]);
                         salvarMensagem(NUMERO_GERENTE, '[Template: lembrete_escala] Leybian', 'sistema', 'bot', 'lembrete_escala');
                         console.log(`🔔 Lembrete de escala enviado para a gerente`);
                         agendar(); // reagenda para a próxima sexta
@@ -2895,7 +2968,7 @@ Seja objetivo. Máximo 600 palavras no total.`;
                 }
                 if (texto.trim()) blocos.push(texto);
 
-                await sendTemplate(NUMERO_GERENTE, 'relatorio_mensal');
+                await sendTemplateGerente('relatorio_mensal');
                 await salvarMensagem(NUMERO_GERENTE, '[Template: relatorio_mensal] Seu relatório mensal está pronto — os detalhes chegam a seguir.', 'sistema', 'bot', 'relatorio_mensal');
                 await new Promise(r => setTimeout(r, 1500));
 
@@ -2905,7 +2978,7 @@ Seja objetivo. Máximo 600 palavras no total.`;
                 const blocosEntregues = [];
                 try {
                         for (const bloco of blocos) {
-                                await sendWhatsApp(NUMERO_GERENTE, bloco);
+                                await sendWhatsAppGerente(bloco);
                                 blocosEntregues.push(bloco);
                                 await new Promise(r => setTimeout(r, 1500)); // pausa entre mensagens
                         }
