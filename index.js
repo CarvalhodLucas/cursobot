@@ -527,6 +527,16 @@ function garantirMencaoCursos(ragResultados, reply) {
         // Checa com e sem acento (o modelo às vezes escreve "Robotica" sem acentuar)
         const lower = reply.toLowerCase();
         if (lower.includes('robótic') || lower.includes('robotic')) return reply; // já mencionou, não mexe
+
+        // O item "cursos" da base tem palavras-chave bem amplas (curso, inglês, espanhol,
+        // disponível, oferecem, idioma) e acaba entrando no RAG até em perguntas específicas
+        // sobre UM curso só (ex: "tem curso de inglês pra criança?"). Só faz sentido forçar a
+        // menção da robótica quando a resposta está de fato enumerando o catálogo completo —
+        // ou seja, cita inglês E espanhol juntos. Fora isso, a nota fica fora de contexto.
+        const mencionaIngles   = lower.includes('ingles') || lower.includes('inglês');
+        const mencionaEspanhol = lower.includes('espanhol');
+        if (!mencionaIngles || !mencionaEspanhol) return reply;
+
         return `${reply}\n\n(Também temos curso de Programação e Robótica! 🤖)`;
 }
 
