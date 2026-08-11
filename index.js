@@ -2298,6 +2298,7 @@ async function checkInatividade() {
         // ── Fallback DB: busca direto em conversas — nao depende de estado_bot ──
         try {
                 const limite23h  = new Date(agora - 23 * 60 * 60 * 1000).toISOString();
+                const limite24h  = new Date(agora - 24 * 60 * 60 * 1000).toISOString();
                 const limite7d   = new Date(agora -  7 * 24 * 60 * 60 * 1000).toISOString();
 
                 const { data: jaEnviados } = await supabase
@@ -2327,33 +2328,51 @@ async function checkInatividade() {
                 );
 
                 for (const tel of candidatos) {
+                        try {
+                                // Checa se conversa já foi encerrada
+                                const { data: historico } = await supabase
+                                        .from('conversas')
+                                        .select('tipo')
+                                        .eq('telefone', tel)
+                                        .order('created_at', { ascending: false })
+                                        .limit(10);
 
-                        // Checa se conversa já foi encerrada
-                        const { data: historico } = await supabase
-                                .from('conversas')
-                                .select('tipo')
-                                .eq('telefone', tel)
-                                .order('created_at', { ascending: false })
-                                .limit(10);
+                                const tipos = (historico || []).map(r => r.tipo);
+                                const jaEncerrado = tipos.some(t =>
+                                        ['aluno','lead_confirmado','lead-vendedor','conversa_vendedor'].includes(t)
+                                );
+                                if (jaEncerrado) {
+                                        reengajamentoEnviado[tel] = true;
+                                        salvarEstadoBot(tel);
+                                        continue;
+                                }
 
-                        const tipos = (historico || []).map(r => r.tipo);
-                        const jaEncerrado = tipos.some(t =>
-                                ['aluno','lead_confirmado','lead-vendedor','conversa_vendedor'].includes(t)
-                        );
-                        if (jaEncerrado) {
+                                // A query acima pega candidatos de até 7 dias atrás (pra não perder ninguém
+                                // que caiu fora da RAM num restart), mas texto livre só funciona dentro da
+                                // janela de 24h. Pra quem já passou disso, não tem como mandar texto livre
+                                // (só template — que não existe pra esse caso) — marca como "tratado" sem
+                                // enviar, senão fica tentando pra sempre e sempre falhando (erro 131047).
+                                if (ultimaPorTel[tel] < limite24h) {
+                                        reengajamentoEnviado[tel] = true;
+                                        salvarEstadoBot(tel);
+                                        console.log(`⏭️  Reengajamento pulado para ${tel} (janela de 24h já fechada, sem template pra esse caso)`);
+                                        continue;
+                                }
+
+                                // Dados do lead não estão na memória → mensagem de texto (janela 24h ainda aberta)
+                                const msgReengFb = 'Oi! 👋 Ainda posso te ajudar com informações sobre nossos cursos do CNA Recreio? 😊';
+                                console.log(`⏳ Reengajamento (fallback conversas) disparado para ${tel}`);
+                                await sendWhatsApp(tel, msgReengFb);
+                                salvarMensagem(tel, msgReengFb, 'bot', null, 'reengajamento');
                                 reengajamentoEnviado[tel] = true;
+                                ultimaAtividade[tel] = new Date(ultimaPorTel[tel]).getTime();
                                 salvarEstadoBot(tel);
-                                continue;
+                        } catch (eCandidato) {
+                                // Isolado por candidato — uma falha (ex: 131047) não pode travar o resto
+                                // do lote. Sem marcar reengajamentoEnviado aqui: tenta de novo no próximo
+                                // ciclo, caso tenha sido um erro passageiro (rede, Meta fora do ar, etc.).
+                                console.error(`❌ Erro ao reengajar ${tel}:`, eCandidato.response?.data || eCandidato.message);
                         }
-
-                        // Dados do lead não estão na memória → mensagem de texto (janela 24h ainda aberta)
-                        const msgReengFb = 'Oi! 👋 Ainda posso te ajudar com informações sobre nossos cursos do CNA Recreio? 😊';
-                        console.log(`⏳ Reengajamento (fallback conversas) disparado para ${tel}`);
-                        await sendWhatsApp(tel, msgReengFb);
-                        salvarMensagem(tel, msgReengFb, 'bot', null, 'reengajamento');
-                        reengajamentoEnviado[tel] = true;
-                        ultimaAtividade[tel] = new Date(ultimaPorTel[tel]).getTime();
-                        salvarEstadoBot(tel);
 
                         await new Promise(r => setTimeout(r, 2000)); // pausa entre envios
                 }
