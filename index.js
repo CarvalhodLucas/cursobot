@@ -149,12 +149,18 @@ async function getEscala() {
         }
 }
 
-async function getVendedor() {
+// "excluir" é opcional — usado na redistribuição de leads sem contato do vendedor,
+// pra garantir que o próximo escolhido NUNCA seja o mesmo que já ignorou o lead.
+async function getVendedor(excluir = null) {
         const escala = await getEscala();
         const agora = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
         const hora = agora.getHours() + agora.getMinutes() / 60;
         const dia = agora.getDay();
-        const TODOS_VENDEDORES = ['Paulo', 'Rebecca', 'Taynara'];
+        const excluirNorm = excluir ? excluir.toLowerCase() : null;
+        const naoExcluido = (nome) => !excluirNorm || String(nome).toLowerCase() !== excluirNorm;
+        const TODOS_VENDEDORES = ['Paulo', 'Rebecca', 'Taynara'].filter(naoExcluido);
+
+        if (TODOS_VENDEDORES.length === 0) return null; // só existe o excluído — não tem pra quem redistribuir
 
         // 1. Domingo — sem escala fixa, usa fila justa entre os três
         if (dia === 0) {
@@ -173,6 +179,7 @@ async function getVendedor() {
         if (ehSabado) {
                 const sabadoMatches = escala.filter(e => {
                         if (e.dia_semana !== 6) return false;
+                        if (!naoExcluido(e.vendedor)) return false;
                         if (e.sabado_paridade && e.sabado_paridade !== 'sempre') {
                                 if (e.sabado_paridade === 'par' && !ehPar) return false;
                                 if (e.sabado_paridade === 'impar' && ehPar) return false;
@@ -197,6 +204,7 @@ async function getVendedor() {
                 const diaMatch = e.dia_semana === dia;
                 const horaMatch = hora >= (e.hora_inicio - 0.02) && hora < (e.hora_fim + 0.02);
                 if (!diaMatch || !horaMatch) return false;
+                if (!naoExcluido(e.vendedor)) return false;
                 return true;
         });
 
@@ -847,6 +855,127 @@ async function notificarVendedor(telefone, vendedor) {
         console.log(`✅ Lead notificado para ${vendedor} (${numeroVendedor})`);
 }
 
+// ── Redistribuição de leads sem contato do vendedor ─────────────────────────
+// Reaproveita o mesmo template de notificação (notificacao_novo_lead), então não
+// precisa de aprovação nova no Meta. Atualiza status_de_leads.vendedor pro novo
+// responsável, preservando vendedor_original (pra saber quem foi o primeiro) e
+// redistribuido_em (pra não redistribuir de novo antes do próximo prazo de 72h).
+async function redistribuirLead(telefone, vendedorAntigo, vendedorNovo, vendedorOriginal, nomeLead) {
+        try {
+                const numeroVendedorNovo = {
+                        rebecca: process.env.NUMERO_REBECCA,
+                        taynara: process.env.NUMERO_TAYNARA,
+                        paulo: process.env.NUMERO_PAULO
+                }[vendedorNovo.toLowerCase()];
+
+                if (!numeroVendedorNovo) {
+                        console.warn(`⚠️ Número do vendedor ${vendedorNovo} não configurado — redistribuição de ${telefone} abortada`);
+                        return;
+                }
+
+                await sendTemplate(numeroVendedorNovo, 'notificacao_novo_lead', [
+                        { name: 'lead_nome',     value: nomeLead || '—' },
+                        { name: 'lead_turma',    value: '—' },
+                        { name: 'lead_horario',  value: '—' },
+                        { name: 'lead_telefone', value: `+${telefone}` }
+                ]);
+
+                const textoNotificacao = `🔁 *Lead redistribuído* (${vendedorAntigo} não entrou em contato em 72h)\n\n` +
+                        `👤 Nome: ${nomeLead || '—'}\n` +
+                        `📞 Telefone: +${telefone}\n\n` +
+                        `Entre em contato o quanto antes.`;
+                await salvarMensagem(numeroVendedorNovo, textoNotificacao, 'sistema', vendedorNovo.toLowerCase(), 'lead_redistribuido');
+
+                await supabase.from('status_de_leads').upsert({
+                        telefone,
+                        vendedor: vendedorNovo,
+                        vendedor_original: vendedorOriginal,
+                        redistribuido_em: new Date().toISOString()
+                }, { onConflict: 'telefone' });
+
+                vendedorPorTelefone[telefone] = vendedorNovo;
+
+                console.log(`🔁 Lead ${telefone} redistribuído de ${vendedorAntigo} pra ${vendedorNovo} (sem contato em 72h)`);
+        } catch (e) {
+                console.error(`❌ Erro ao redistribuir lead ${telefone}:`, e.response?.data || e.message);
+        }
+}
+
+// Varre leads confirmados pelo bot (tipo='lead_confirmado') dos últimos 30 dias que
+// ainda não têm NENHUMA mensagem de='vendedor' registrada (nem pelo CRM, nem eco do
+// WhatsApp Business App do vendedor) depois de 72h — sinal de que o vendedor nunca
+// entrou em contato de verdade, só recebeu a notificação e ignorou. Pula quem já
+// converteu ou já foi tratado como perdido/matriculado/etc — redistribuir não faz
+// sentido nesses casos.
+const STATUS_IGNORAR_REDISTRIBUICAO = ['matriculado', 'aluno', 'perdido', 'colega', 'parceiro', 'engano'];
+async function redistribuirLeadsSemContato() {
+        const limite72h  = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+        const limiteBusca = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+        const { data: confirmacoes, error } = await supabase
+                .from('conversas')
+                .select('telefone, vendedor, created_at')
+                .eq('tipo', 'lead_confirmado')
+                .eq('de', 'cliente')
+                .gte('created_at', limiteBusca)
+                .order('created_at', { ascending: true });
+
+        if (error) {
+                console.error('❌ Erro ao buscar leads confirmados p/ redistribuição:', error.message);
+                return;
+        }
+        if (!confirmacoes || confirmacoes.length === 0) return;
+
+        // Primeira confirmação de cada telefone = momento e vendedor original atribuído pelo bot
+        const primeiraConfirmacao = {};
+        confirmacoes.forEach(c => { if (!primeiraConfirmacao[c.telefone]) primeiraConfirmacao[c.telefone] = c; });
+        const telefones = Object.keys(primeiraConfirmacao);
+        if (telefones.length === 0) return;
+
+        const { data: statusRows } = await supabase
+                .from('status_de_leads')
+                .select('telefone, status, nome, vendedor, vendedor_original, redistribuido_em')
+                .in('telefone', telefones);
+        const statusMap = {};
+        (statusRows || []).forEach(s => { statusMap[s.telefone] = s; });
+
+        const { data: msgsVendedor } = await supabase
+                .from('conversas')
+                .select('telefone, created_at')
+                .eq('de', 'vendedor')
+                .in('telefone', telefones)
+                .gte('created_at', limiteBusca);
+        const ultimoContatoVendedor = new Set((msgsVendedor || []).map(m => m.telefone));
+
+        for (const telefone of telefones) {
+                const st = statusMap[telefone];
+                if (st && STATUS_IGNORAR_REDISTRIBUICAO.includes(st.status)) continue;
+                if (ultimoContatoVendedor.has(telefone)) continue; // vendedor já falou com o lead
+
+                // Referência de tempo: desde a confirmação original, ou desde a última
+                // redistribuição (o que for mais recente) — pra não redistribuir de novo
+                // antes de completar mais 72h com o vendedor novo.
+                const desde = (st?.redistribuido_em && st.redistribuido_em > primeiraConfirmacao[telefone].created_at)
+                        ? st.redistribuido_em
+                        : primeiraConfirmacao[telefone].created_at;
+                if (desde > limite72h) continue;
+
+                const vendedorAtual    = st?.vendedor || primeiraConfirmacao[telefone].vendedor;
+                const vendedorOriginal = st?.vendedor_original || primeiraConfirmacao[telefone].vendedor;
+                if (!vendedorAtual) continue;
+
+                const novoVendedor = await getVendedor(vendedorAtual);
+                if (!novoVendedor || novoVendedor.toLowerCase() === vendedorAtual.toLowerCase()) continue;
+
+                await redistribuirLead(telefone, vendedorAtual, novoVendedor, vendedorOriginal, st?.nome);
+                await new Promise(r => setTimeout(r, 1000));
+        }
+}
+
+// Roda 1x por dia — o prazo é de 72h, não precisa checar com mais frequência.
+setInterval(redistribuirLeadsSemContato, 24 * 60 * 60 * 1000);
+// ────────────────────────────────────────────────────────────────────────────
+
 async function notificarCoordenacao(telefone) {
         if (!NUMERO_COORDENACAO) {
                 console.warn('⚠️ Número da coordenação não configurado');
@@ -1316,6 +1445,7 @@ app.post('/webhook', async (req, res) => {
         if (aguardandoFeedbackPerdido[telefone]) {
                 const origem = aguardandoFeedbackPerdido[telefone];
                 delete aguardandoFeedbackPerdido[telefone];
+                salvarEstadoBot(telefone);
                 await salvarMensagem(telefone, mensagem, 'cliente', origem.vendedorSalvar || 'bot', 'feedback_perdido', midiaUrl);
                 const agradecimento = 'Muito obrigado pelo retorno! Isso nos ajuda bastante a melhorar 🙏';
                 try {
@@ -2109,7 +2239,7 @@ async function carregarEstadoBot() {
         try {
                 const { data, error } = await supabase
                         .from('estado_bot')
-                        .select('telefone, ultima_atividade, reengajamento_env, confirmado, notificado');
+                        .select('telefone, ultima_atividade, reengajamento_env, confirmado, notificado, aguardando_feedback_perdido');
                 if (error) throw error;
                 if (!data || data.length === 0) {
                         console.log('📦 estado_bot: nenhum registro ainda');
@@ -2129,6 +2259,12 @@ async function carregarEstadoBot() {
                                 dadosLead[r.telefone].confirmado = r.confirmado;
                                 dadosLead[r.telefone].notificado  = r.notificado;
                         }
+                        // Restaura a espera pela resposta da pesquisa de lead perdido — sem isso,
+                        // um redeploy bem no meio da janela entre enviar a pesquisa e o lead
+                        // responder faria a resposta cair no fluxo normal da IA por engano.
+                        if (r.aguardando_feedback_perdido) {
+                                aguardandoFeedbackPerdido[r.telefone] = { vendedorSalvar: 'bot' };
+                        }
                 });
                 console.log(`📦 Estado restaurado para ${data.length} telefone(s)`);
         } catch (err) {
@@ -2147,6 +2283,7 @@ function salvarEstadoBot(telefone) {
                 reengajamento_env: !!reengajamentoEnviado[telefone],
                 confirmado:        !!(dadosLead[telefone]?.confirmado),
                 notificado:        !!(dadosLead[telefone]?.notificado),
+                aguardando_feedback_perdido: !!aguardandoFeedbackPerdido[telefone],
                 updated_at:        new Date().toISOString()
         }, { onConflict: 'telefone' }).then(({ error }) => {
                 if (error) console.error(`❌ Erro ao salvar estado_bot [${telefone}]:`, error.message);
@@ -2837,6 +2974,7 @@ async function enviarPesquisasLeadsPerdidos() {
                         await sendTemplate(lead.telefone, 'pesquisa_lead_perdido', [nomeLead]);
                         await salvarMensagem(lead.telefone, textoTemplate, 'sistema', 'bot', 'pesquisa_perdido');
                         aguardandoFeedbackPerdido[lead.telefone] = { vendedorSalvar: 'bot' };
+                        salvarEstadoBot(lead.telefone);
 
                         // Só marca como enviado DEPOIS do sendTemplate ter sucesso — se falhar
                         // (ex: template ainda não aprovado), tenta de novo no próximo sweep.
