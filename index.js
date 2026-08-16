@@ -3046,6 +3046,32 @@ function agendarPesquisasLeadsPerdidos() {
 }
 // ────────────────────────────────────────────────────────────────────────────
 
+// ── Classificação automática de leads antigos (backlog) ─────────────────────
+// Antes só rodava se alguém batesse manualmente em GET /processar-novos — não
+// havia nenhum agendamento, então leads parados >30 dias como 'novo' nunca
+// viravam 'perdido' sozinhos, e a pesquisa de feedback (que só busca leads com
+// status='perdido') ficava sem gente pra mandar mesmo com vários leads frios.
+// Roda 1x por dia, antes do horário da pesquisa de leads perdidos (13h BRT).
+function agendarClassificacaoLeadsAntigos() {
+        function msAteProximoDisparo() {
+                const agora = new Date();
+                const proximo = new Date(agora);
+                proximo.setUTCHours(13, 0, 0, 0); // 10h BRT = 13h UTC
+                if (proximo <= agora) proximo.setUTCDate(proximo.getUTCDate() + 1);
+                return proximo - agora;
+        }
+        function agendar() {
+                const ms = msAteProximoDisparo();
+                console.log(`⏰ Classificação de leads antigos agendada em ${Math.round(ms / 60000)} minutos`);
+                setTimeout(() => {
+                        processarBacklogNovos();
+                        agendar();
+                }, ms);
+        }
+        agendar();
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 // ── Relatório Mensal via OpenRouter ─────────────────────────────────────────
 async function gerarRelatorioMensal() {
         if (!NUMERO_GERENTE || !OPENROUTER_API_KEY) return;
@@ -3335,6 +3361,8 @@ app.listen(PORT, () => {
         agendarLembreteEscala();
         // Lembrete semanal de leads sem status pros vendedores, toda segunda 10h BRT
         agendarLembreteStatusVendedor();
+        // Classificação automática de leads antigos (>30d parados como 'novo' → perdido/pausado/em_andamento), 1x por dia às 10h BRT
+        agendarClassificacaoLeadsAntigos();
         // Pesquisa de feedback de leads perdidos, seg-sex às 13h BRT
         agendarPesquisasLeadsPerdidos();
 });
