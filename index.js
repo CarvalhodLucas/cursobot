@@ -42,6 +42,18 @@ const NUMERO_GERENTE = process.env.NUMERO_GERENTE;
 // mensal, lembrete de escala). Configurar em NUMERO_LUCAS nas variáveis do Railway.
 const NUMERO_LUCAS = process.env.NUMERO_LUCAS;
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+
+// Números internos de gestão (gerente, Lucas) — nunca são lead/cliente de verdade.
+// Usado tanto na guarda do /webhook (não entrar no fluxo de IA) quanto em
+// checkInatividade (não entrar na fila de reengajamento — sem isso, uma resposta
+// deles ao resumo diário ficava marcada como de=cliente no banco e o fallback por
+// DB do reengajamento, que não conhecia essa guarda, tentava reengajar a gerente/
+// Lucas como se fossem lead, batendo no erro 131047 quando a janela de 24h fechava).
+const NUMEROS_INTERNOS_GESTAO = new Set(
+        [NUMERO_GERENTE, NUMERO_LUCAS]
+                .filter(Boolean)
+                .map(n => normalizePhone(n))
+);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 let geminiModel;
@@ -1465,12 +1477,7 @@ app.post('/webhook', async (req, res) => {
         // normal de lead — passava pelo aviso de LGPD e a IA perguntava "você já é aluno
         // ou tem interesse em se matricular?". Só registra a mensagem (mantém a janela de
         // 24h aberta) e não aciona a IA nem o fluxo de qualificação.
-        const numerosInternosGestao = new Set(
-                [process.env.NUMERO_GERENTE, process.env.NUMERO_LUCAS]
-                        .filter(Boolean)
-                        .map(n => normalizePhone(n))
-        );
-        if (numerosInternosGestao.has(telefone)) {
+        if (NUMEROS_INTERNOS_GESTAO.has(telefone)) {
                 await salvarMensagem(telefone, mensagem, 'cliente', 'Coordenação', 'resposta_gerente');
 
                 // Essa mensagem acabou de abrir a janela de 24h — se tinha conteúdo detalhado
@@ -2396,7 +2403,8 @@ async function checkInatividade() {
                 const candidatos = Object.keys(ultimaPorTel).filter(tel =>
                         !ultimaAtividade[tel] &&
                         !reengajamentoEnviado[tel] &&
-                        !jaEnviadosSet.has(tel)
+                        !jaEnviadosSet.has(tel) &&
+                        !NUMEROS_INTERNOS_GESTAO.has(tel)
                 );
 
                 for (const tel of candidatos) {
