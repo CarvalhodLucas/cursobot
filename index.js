@@ -112,6 +112,50 @@ function registrarAtribuicao(vendedor) {
                 .then(({ error }) => { if (error) console.error('❌ Erro ao salvar rodízio:', error.message); });
 }
 
+// Mapeamento LID → telefone real, persistido pra sobreviver a redeploy do Railway.
+// Antes só vivia em memória (Map lidToPhone) e resetava a cada restart, forçando
+// o LID a ser "reaprendido" do zero — o que deixava uma janela maior pra mensagens
+// de vendedor chegarem com LID ainda não resolvido e virarem lead "fantasma".
+async function carregarLidMap() {
+        try {
+                const { data, error } = await supabase.from('lid_telefone_map').select('lid, telefone');
+                if (error) throw error;
+                (data || []).forEach(r => lidToPhone.set(r.lid, r.telefone));
+                console.log(`🔗 ${(data || []).length} mapeamento(s) de LID restaurado(s) do Supabase`);
+        } catch (e) {
+                console.error('❌ Erro ao carregar mapa de LID persistido:', e.message);
+        }
+}
+
+function salvarLidMap(lid, telefone) {
+        supabase.from('lid_telefone_map')
+                .upsert({ lid, telefone }, { onConflict: 'lid' })
+                .then(({ error }) => { if (error) console.error('❌ Erro ao salvar mapa de LID:', error.message); });
+}
+
+// Resgata mensagens de vendedor que chegaram com um LID ainda não resolvido e
+// ficaram em espera (ver /webhook-vendedor) — agora que o telefone real é
+// conhecido, salva todas na ordem certa sob o telefone de verdade e limpa a fila.
+async function flushMensagensPendentesLid(lid, telefone) {
+        try {
+                const { data: pendentes, error } = await supabase
+                        .from('mensagens_lid_pendentes')
+                        .select('id, mensagem, de, vendedor, created_at')
+                        .eq('lid', lid)
+                        .order('created_at', { ascending: true });
+                if (error) throw error;
+                if (!pendentes || pendentes.length === 0) return;
+
+                for (const p of pendentes) {
+                        await salvarMensagem(telefone, p.mensagem, p.de, p.vendedor, 'conversa_vendedor');
+                }
+                await supabase.from('mensagens_lid_pendentes').delete().eq('lid', lid);
+                console.log(`✅ ${pendentes.length} mensagem(ns) pendente(s) do LID ${lid} liberada(s) pro telefone ${telefone}`);
+        } catch (e) {
+                console.error(`❌ Erro ao liberar mensagens pendentes do LID ${lid}:`, e.message);
+        }
+}
+
 // Entre uma lista de vendedores ativos agora, escolhe quem está há mais tempo
 // sem receber um lead (nunca recebeu = prioridade máxima).
 function escolherPorFila(vendedoresAtivos) {
@@ -1650,37 +1694,55 @@ app.post('/webhook-vendedor', async (req, res) => {
         const rawPhone = body.phone || '';
         const chatLid = body.chatLid ? body.chatLid.split('@')[0] : null;
         const isLid = rawPhone.includes('@lid');
+        const vendedor = req.query.vendedor || 'desconhecido';
+        const de = (body.fromMe === true || body.fromMe === 'true') ? 'vendedor' : 'cliente';
 
         let telefone;
         if (!isLid) {
                 // Recebido (fromMe=false): temos o número real do cliente
                 telefone = normalizePhone(rawPhone);
-                // Armazena mapeamento LID → telefone real (em memória e retroativo no banco)
+                // Armazena mapeamento LID → telefone real (em memória e persistido no banco,
+                // pra sobreviver a redeploy) + corrige registros antigos que ficaram com o LID
                 if (chatLid && !lidToPhone.has(chatLid)) {
                         lidToPhone.set(chatLid, telefone);
                         console.log(`🔗 LID mapeado: ${chatLid} → ${telefone}`);
-                        // Atualiza registros antigos no banco que usavam o LID como telefone
+                        salvarLidMap(chatLid, telefone);
                         supabase.from('conversas')
                                 .update({ telefone: telefone })
                                 .eq('telefone', chatLid)
-                                .then(({ error, count }) => {
+                                .then(({ error }) => {
                                         if (!error) console.log(`✅ DB retroativo: ${chatLid} → ${telefone}`);
                                 });
+                        // Libera mensagens de vendedor que chegaram enquanto esse LID ainda
+                        // não tinha telefone real conhecido e ficaram em espera
+                        flushMensagensPendentesLid(chatLid, telefone);
                 }
         } else {
-                // Enviado (fromMe=true): Z-API usa LID — tenta resolver pelo cache
+                // Enviado (fromMe=true): Z-API/WANotifier usa LID — tenta resolver pelo cache
                 const lid = rawPhone.split('@')[0];
                 const realPhone = lidToPhone.get(lid) || (chatLid ? lidToPhone.get(chatLid) : null);
-                telefone = realPhone || lid; // fallback: usa o LID como identificador
+                if (!realPhone) {
+                        // Ainda não sabemos o telefone real desse LID — NÃO salva com o LID cru
+                        // como telefone (isso criava um lead "fantasma" que nunca mais vira um
+                        // número de verdade). Guarda em espera; quando o cliente escrever e
+                        // revelar o telefone real, flushMensagensPendentesLid() resgata essa
+                        // mensagem pro telefone certo.
+                        if (mensagem) {
+                                const { error } = await supabase.from('mensagens_lid_pendentes').insert({
+                                        lid: lid || chatLid, mensagem, de, vendedor
+                                });
+                                if (error) console.error('❌ Erro ao guardar mensagem pendente de LID:', error.message);
+                                else console.log(`⏳ LID ${lid} ainda não resolvido — mensagem guardada em espera`);
+                        }
+                        return;
+                }
+                telefone = realPhone;
         }
 
         if (!telefone || !mensagem) {
                 console.log(`⚠️ Webhook vendedor ignorado: f=${telefone}, m=${!!mensagem}`);
                 return;
         }
-
-        const vendedor = req.query.vendedor || 'desconhecido';
-        const de = (body.fromMe === true || body.fromMe === 'true') ? 'vendedor' : 'cliente';
 
         console.log(`📱 [${vendedor}] ${de}: ${mensagem} (${telefone})`);
 
@@ -3356,6 +3418,8 @@ app.listen(PORT, () => {
         carregarEstadoBot();
         // Restaura a fila do rodízio (quem recebeu lead por último), pra não resetar a cada deploy
         carregarRodizio();
+        // Restaura o mapeamento LID → telefone real, pra não resetar a cada deploy
+        carregarLidMap();
         // Agenda resumo diário às 8h BRT
         agendarResumoDiario();
         agendarLembreteEscala();
