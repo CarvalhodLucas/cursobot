@@ -846,6 +846,29 @@ async function sendTemplateGerente(templateName, variables = []) {
 // senão cada bloco que falhasse ia "pisar" no anterior e perder pedaço do relatório.
 async function enviarLivreOuItemPendente(telefone, texto, tipoSalvar, vendedorSalvar = 'bot') {
         try {
+                // Confere ANTES de tentar se a janela de 24h está aberta de verdade — com base na
+                // última mensagem DO CLIENTE, não na última que NÓS mandamos. Sem essa checagem,
+                // a Meta às vezes aceita a chamada de envio (POST retorna 200, ganha um wamid) e só
+                // falha DEPOIS, de forma assíncrona, via webhook de status (erro 131047 — ver
+                // tratamento de value.statuses no /webhook). Como o try/catch aqui só pega erro
+                // síncrono do POST, esse caso batia no "sucesso" (return null), a pendência era
+                // descartada e a mensagem se perdia de vez, sem nunca ser reenviada — foi o que
+                // aconteceu com o resumo diário detalhado pra gerente/Lucas.
+                const limite24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+                const { data: ultimaCliente } = await supabase
+                        .from('conversas')
+                        .select('created_at')
+                        .eq('telefone', telefone)
+                        .eq('de', 'cliente')
+                        .order('created_at', { ascending: false })
+                        .limit(1);
+
+                const janelaAberta = ultimaCliente && ultimaCliente.length > 0 && ultimaCliente[0].created_at >= limite24h;
+                if (!janelaAberta) {
+                        console.log(`📬 Bloco adiado pra ${telefone} (janela de 24h fechada — sem mensagem do cliente nas últimas 24h).`);
+                        return { texto, tipoSalvar, vendedorSalvar };
+                }
+
                 await sendWhatsApp(telefone, texto);
                 await salvarMensagem(telefone, texto, 'sistema', vendedorSalvar, tipoSalvar);
                 return null;
