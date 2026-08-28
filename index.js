@@ -2991,15 +2991,30 @@ async function classificarLeadsAntigos() {
                 return;
         }
 
-        // Filtra apenas os que ainda estão com status "novo"
+        // Filtra apenas os que ainda estão sem decisão: com status "novo" OU sem
+        // NENHUMA linha em status_de_leads. Esse segundo caso é o mais comum — a
+        // linha só é criada quando alguém (vendedor no CRM, notificação de lead etc.)
+        // grava algo, então lead que nunca teve interação humana simplesmente não
+        // existe na tabela. Antes esse filtro exigia `.eq('status','novo')`, o que
+        // tornava esses leads (a maioria dos que ficam frios) invisíveis pra
+        // classificação automática — o mesmo critério "sem linha OU status='novo'"
+        // já é usado em contarLeadsEmAberto(), só não estava replicado aqui.
         const telefones = leadsAntigos.map(l => l.telefone);
-        const { data: statusNovos } = await supabase
+        const { data: statusExistentes } = await supabase
                 .from('status_de_leads')
-                .select('telefone, nome, vendedor')
-                .in('telefone', telefones)
-                .eq('status', 'novo');
+                .select('telefone, status, nome, vendedor')
+                .in('telefone', telefones);
 
-        const leads = statusNovos || [];
+        const statusMap = {};
+        (statusExistentes || []).forEach(s => { statusMap[s.telefone] = s; });
+
+        const leads = leadsAntigos
+                .filter(l => !statusMap[l.telefone] || statusMap[l.telefone].status === 'novo')
+                .map(l => ({
+                        telefone: l.telefone,
+                        nome: statusMap[l.telefone]?.nome || null,
+                        vendedor: statusMap[l.telefone]?.vendedor || l.vendedor || null,
+                }));
 
         if (leads.length === 0) {
                 console.log('✅ Nenhum lead antigo (>30d) com status "novo" para classificar');
@@ -3026,16 +3041,20 @@ async function classificarLeadsAntigos() {
                         const status = await classificarLeadIA(texto);
                         if (!status) { contagem.erro++; continue; }
 
-                        const updatePayload = { status };
+                        const updatePayload = { telefone: lead.telefone, status };
                         // Marca o momento da transição pra 'perdido' — usado pela pesquisa de
                         // feedback (enviarPesquisasLeadsPerdidos), que só dispara 24h depois disso.
                         if (status === 'perdido') {
                                 updatePayload.perdido_em = new Date().toISOString();
                                 updatePayload.feedback_perda_enviado = false;
                         }
+                        // upsert (não update): boa parte desses leads não tem linha em
+                        // status_de_leads ainda (ver filtro acima), então um simples UPDATE
+                        // afetaria 0 linhas e a classificação se perderia silenciosamente.
+                        if (lead.nome) updatePayload.nome = lead.nome;
+                        if (lead.vendedor) updatePayload.vendedor = lead.vendedor;
                         await supabase.from('status_de_leads')
-                                .update(updatePayload)
-                                .eq('telefone', lead.telefone);
+                                .upsert(updatePayload, { onConflict: 'telefone' });
 
                         contagem[status] = (contagem[status] || 0) + 1;
                         console.log(`🤖 ${lead.nome || lead.telefone} → ${status}`);
