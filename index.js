@@ -49,10 +49,17 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 // deles ao resumo diário ficava marcada como de=cliente no banco e o fallback por
 // DB do reengajamento, que não conhecia essa guarda, tentava reengajar a gerente/
 // Lucas como se fossem lead, batendo no erro 131047 quando a janela de 24h fechava).
+// NÃO usa normalizePhone() aqui: ela prepende "55" em qualquer número de 10-11
+// dígitos assumindo que é um BR local sem DDI — mas NUMERO_GERENTE é um número
+// espanhol (+34 618 097 942), que também tem 11 dígitos. normalizePhone() estava
+// corrompendo "34618097942" pra "5534618097942", que nunca batia com o `telefone`
+// cru vindo do webhook (String(message.from).replace(/\D/g,'')) — então toda
+// resposta da gerente caía no fluxo normal de lead novo em vez de ser reconhecida
+// como mensagem interna. Aqui só limpamos os dígitos, igual ao webhook faz.
 const NUMEROS_INTERNOS_GESTAO = new Set(
         [NUMERO_GERENTE, NUMERO_LUCAS]
                 .filter(Boolean)
-                .map(n => normalizePhone(n))
+                .map(n => String(n).replace(/\D/g, ''))
 );
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -214,7 +221,7 @@ async function getVendedor(excluir = null) {
         const dia = agora.getDay();
         const excluirNorm = excluir ? excluir.toLowerCase() : null;
         const naoExcluido = (nome) => !excluirNorm || String(nome).toLowerCase() !== excluirNorm;
-        const TODOS_VENDEDORES = ['Paulo', 'Rebecca', 'Taynara'].filter(naoExcluido);
+        const TODOS_VENDEDORES = ['Wellington', 'Rebecca', 'Taynara'].filter(naoExcluido);
 
         if (TODOS_VENDEDORES.length === 0) return null; // só existe o excluído — não tem pra quem redistribuir
 
@@ -554,7 +561,10 @@ async function askGroq(telefone, mensagem, apiKey, systemPromptFinal) {
         const response = await axios.post(
                 'https://api.groq.com/openai/v1/chat/completions',
                 {
-                        model: 'llama-3.3-70b-versatile',
+                        // llama-3.3-70b-versatile foi desativado pela Groq em 16/08/2026 (retornava
+                        // 404 em toda chamada, forçando fallback pro Gemini o tempo todo). Substituído
+                        // pelo modelo recomendado oficialmente pela Groq na migração.
+                        model: 'openai/gpt-oss-120b',
                         messages: [
                                 { role: 'system', content: systemPromptFinal },
                                 ...conversas[telefone]
@@ -954,7 +964,7 @@ async function redistribuirLead(telefone, vendedorAntigo, vendedorNovo, vendedor
                 const numeroVendedorNovo = {
                         rebecca: process.env.NUMERO_REBECCA,
                         taynara: process.env.NUMERO_TAYNARA,
-                        paulo: process.env.NUMERO_PAULO
+                        wellington: process.env.NUMERO_PAULO
                 }[vendedorNovo.toLowerCase()];
 
                 if (!numeroVendedorNovo) {
@@ -1380,7 +1390,7 @@ app.post('/webhook', async (req, res) => {
 
         const vendedorPorPhoneId = {
                 [process.env.META_PHONE_NUMBER_ID_REBECCA]: 'Rebecca',
-                [process.env.META_PHONE_NUMBER_ID_PAULO]:   'Paulo',
+                [process.env.META_PHONE_NUMBER_ID_PAULO]:   'Wellington', // mesmo número do Paulo — ele saiu, Wellington assumiu o perfil
                 [process.env.META_PHONE_NUMBER_ID_TAYNARA]: 'Taynara',
         };
 
@@ -1920,12 +1930,12 @@ function checkAdminToken(req, res) {
 const PHONE_NUMBER_ID_POR_VENDEDOR = {
         rebecca: process.env.META_PHONE_NUMBER_ID_REBECCA,
         taynara: process.env.META_PHONE_NUMBER_ID_TAYNARA,
-        paulo: process.env.META_PHONE_NUMBER_ID_PAULO,
+        wellington: process.env.META_PHONE_NUMBER_ID_PAULO, // Wellington assumiu o número/perfil do Paulo
 };
 
 // Nome com a capitalização correta, igual ao que o eco do WhatsApp Business App salva
 // (evita mensagem enviada pelo CRM "sumir" da conversa por causa de maiúscula/minúscula)
-const NOME_CAPITALIZADO_VENDEDOR = { rebecca: 'Rebecca', taynara: 'Taynara', paulo: 'Paulo' };
+const NOME_CAPITALIZADO_VENDEDOR = { rebecca: 'Rebecca', taynara: 'Taynara', wellington: 'Wellington' };
 
 app.post('/enviar-vendedor', async (req, res) => {
         if (!checkAdminToken(req, res)) return;
@@ -2831,7 +2841,7 @@ async function contarLeadsAbertosPorVendedor(nomeVendedor) {
 async function enviarLembreteStatusVendedor() {
         for (const [nome, numero] of [
                 ['Rebecca', process.env.NUMERO_REBECCA],
-                ['Paulo', process.env.NUMERO_PAULO],
+                ['Wellington', process.env.NUMERO_PAULO],
                 ['Taynara', process.env.NUMERO_TAYNARA]
         ]) {
                 if (!numero) continue;
@@ -2904,7 +2914,7 @@ async function checkLeadsPausados() {
                         const vendedor = resumo?.vendedor?.toLowerCase();
                         let numeroVendedor = null;
                         if (vendedor && vendedor.includes('rebecca')) numeroVendedor = process.env.NUMERO_REBECCA;
-                        else if (vendedor && vendedor.includes('paulo')) numeroVendedor = process.env.NUMERO_PAULO;
+                        else if (vendedor && vendedor.includes('wellington')) numeroVendedor = process.env.NUMERO_PAULO;
                         else if (vendedor && vendedor.includes('taynara')) numeroVendedor = process.env.NUMERO_TAYNARA;
 
                         if (!numeroVendedor) continue;
@@ -2948,7 +2958,11 @@ async function classificarLeadIA(conversaTexto) {
                         const resp = await axios.post(
                                 'https://api.groq.com/openai/v1/chat/completions',
                                 {
-                                        model: 'llama-3.3-70b-versatile',
+                                        // llama-3.3-70b-versatile foi desativado pela Groq em 16/08/2026 —
+                                        // era por isso que TODA classificação vinha falhando (100% erro) e
+                                        // nenhum lead virava 'perdido' havia semanas. Substituído pelo
+                                        // modelo recomendado oficialmente pela Groq na migração.
+                                        model: 'openai/gpt-oss-120b',
                                         messages: [
                                                 { role: 'system', content: systemPrompt },
                                                 { role: 'user', content: texto }
@@ -2964,9 +2978,11 @@ async function classificarLeadIA(conversaTexto) {
                 }
         }
 
-        // Tentativa 2 — Gemini (fallback)
+        // Tentativa 2 — Gemini (fallback). gemini-2.5-flash-lite também foi descontinuado
+        // pelo Google ("no longer available to new users") — troquei pro gemini-2.5-flash
+        // normal, que já é usado (e confirmado funcionando) no resto do bot.
         try {
-                const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-lite' });
+                const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
                 const result = await model.generateContent(`${systemPrompt}\n\n${texto}`);
                 return parseStatus(result.response.text());
         } catch (err) {
