@@ -2345,6 +2345,22 @@ app.get('/relatorio-mensal', async (req, res) => {
         gerarRelatorioMensal();
 });
 
+// Preview: monta o relatório com os mesmos dados/IA, mas NÃO manda nada pelo WhatsApp —
+// devolve o texto completo na resposta pra revisão antes de disparar de verdade.
+app.get('/relatorio-mensal/preview', async (req, res) => {
+        if (!checkAdminToken(req, res)) return;
+        if (relatorioEmAndamento) {
+                return res.json({ ok: false, msg: 'Relatório já está sendo gerado. Aguarde.' });
+        }
+        try {
+                const texto = await gerarRelatorioMensal({ preview: true });
+                if (!texto) return res.status(500).json({ ok: false, msg: 'Não foi possível gerar o preview (ver logs do servidor).' });
+                res.json({ ok: true, relatorio: texto });
+        } catch (e) {
+                res.status(500).json({ ok: false, msg: e.message });
+        }
+});
+
 // ── Persistência de estado no Supabase ─────────────────────────────────────
 // Carrega estado salvo no startup para resistir a redeploys do Railway
 async function carregarEstadoBot() {
@@ -3232,11 +3248,14 @@ function agendarClassificacaoLeadsAntigos() {
 // ────────────────────────────────────────────────────────────────────────────
 
 // ── Relatório Mensal via OpenRouter ─────────────────────────────────────────
-async function gerarRelatorioMensal() {
-        if (!NUMERO_GERENTE || !OPENROUTER_API_KEY) return;
-        if (relatorioEmAndamento) { console.log('⚠️ Relatório já em andamento, ignorando.'); return; }
+// opts.preview=true monta o relatório (mesma lógica, mesmos dados) e RETORNA o texto,
+// sem mandar nada pelo WhatsApp — pra dar pra revisar antes de disparar de verdade.
+async function gerarRelatorioMensal(opts = {}) {
+        const preview = !!opts.preview;
+        if (!NUMERO_GERENTE || !OPENROUTER_API_KEY) return null;
+        if (relatorioEmAndamento) { console.log('⚠️ Relatório já em andamento, ignorando.'); return null; }
         relatorioEmAndamento = true;
-        console.log('📋 Gerando relatório mensal...');
+        console.log(preview ? '📋 Gerando PREVIEW do relatório mensal (não envia nada)...' : '📋 Gerando relatório mensal...');
 
         try {
                 // Mês anterior completo em horário de Brasília
@@ -3443,6 +3462,14 @@ relatório. Máximo 1100 palavras no total.`;
                 }
                 if (texto.trim()) blocos.push(texto);
 
+                // Modo preview: já temos o texto completo pronto (relatorioCompleto) — devolve
+                // e sai sem chamar sendTemplateGerente/enviarLivreOuItemPendente, então nenhuma
+                // mensagem real é disparada.
+                if (preview) {
+                        console.log('📋 Preview do relatório mensal gerado (nada foi enviado).');
+                        return relatorioCompleto;
+                }
+
                 await sendTemplateGerente('relatorio_mensal');
                 await salvarMensagem(NUMERO_GERENTE, '[Template: relatorio_mensal] Seu relatório mensal está pronto — os detalhes chegam a seguir.', 'sistema', 'bot', 'relatorio_mensal');
                 await new Promise(r => setTimeout(r, 1500));
@@ -3466,8 +3493,10 @@ relatório. Máximo 1100 palavras no total.`;
                 definirPendentes(NUMERO_GERENTE, 'relatorio_mensal_detalhado', pendentesGerente);
                 if (NUMERO_LUCAS) definirPendentes(NUMERO_LUCAS, 'relatorio_mensal_detalhado', pendentesLucas);
                 console.log(`📋 Relatório mensal: ${entreguesGerente}/${blocos.length} bloco(s) entregues na hora pra gerente (o resto fica pendente até ela responder).`);
+                return relatorioCompleto;
         } catch (err) {
                 console.error('❌ Erro ao gerar relatório mensal:', err.message);
+                return null;
         } finally {
                 relatorioEmAndamento = false;
         }
