@@ -3443,15 +3443,31 @@ Gere um relatório com exatamente estas seções:
 4. PADRÕES IDENTIFICADOS (horários, perfil dos leads, o que funcionou)
 5. RECOMENDAÇÕES PARA O PRÓXIMO MÊS (3 a 5 ações práticas e concretas, gerais pra equipe)
 
+REGRA CONTRA GENÉRICO: é proibido usar conselho de manual sem amarrar num caso real
+da amostra acima. Frases como "padronizar o processo", "criar um checklist",
+"treinar a equipe em técnicas de fechamento", "melhorar o acompanhamento" só podem
+aparecer se vierem IMEDIATAMENTE acompanhadas do caso específico que gerou aquela
+sugestão (nome/telefone do lead, o que aconteceu, o que deveria ter sido diferente).
+Se você não tem um exemplo concreto na amostra pra justificar um ponto, não inclua
+esse ponto — é melhor um relatório mais curto e específico do que um longo e vago.
+Toda sugestão de "Recomendações para o próximo mês" precisa citar pelo menos um
+padrão ou caso real observado nos dados acima, não pode ser um conselho genérico
+que serviria pra qualquer equipe de vendas do mundo.
+
 Seja objetivo e direto, mas não corte a seção 2 — ela é a mais importante deste
 relatório. Máximo 2600 palavras no total.`;
 
-                // 6. Chamada OpenRouter com fallback entre modelos. DeepSeek V4 Flash é pago
-                // mas muito barato (~$0,001 por relatório, roda 1x/mês) e bem mais confiável/
-                // melhor que os gratuitos — vai primeiro. Os gratuitos ficam como rede de
-                // segurança só pro caso raro do DeepSeek cair ou faltar crédito na conta.
+                // 6. Chamada OpenRouter com fallback entre modelos. Antes usava V4 FLASH — a
+                // variante "leve" da DeepSeek (13B parâmetros ativos de 284B), otimizada pra
+                // velocidade/custo, não pra profundidade — e o relatório saía raso/genérico.
+                // Trocado pra V4 PRO: mesma geração, mas o modelo "cheio" (49B ativos de 1,6T),
+                // feito especificamente pra raciocínio avançado e síntese de grande volume de
+                // informação — exatamente o que um relatório mensal precisa. Roda 1x/mês, então
+                // o custo maior (~$0,02-0,05 por relatório) é irrelevante. V4 Flash entra como
+                // fallback pago antes dos gratuitos, que ficam só como rede de segurança.
                 const modelos = [
-                        'deepseek/deepseek-v4-flash',
+                        'deepseek/deepseek-v4-pro-0813',
+                        'deepseek/deepseek-v4-flash-0731',
                         'meta-llama/llama-3.3-70b-instruct:free',
                         'nvidia/nemotron-3-super-120b-a12b:free',
                         'openai/gpt-oss-120b:free',
