@@ -2991,19 +2991,19 @@ async function classificarLeadIA(conversaTexto) {
         }
 }
 
-// ── Classifica automaticamente leads com mais de 30 dias sem atividade ───────
+// ── Classifica automaticamente leads com mais de 15 dias sem atividade ───────
 async function classificarLeadsAntigos() {
-        const limite30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
 
         // Usa ultimo_contato da leads_resumo (data real da última mensagem)
         // em vez de updated_at do status_de_leads (que muda a cada upsert)
         const { data: leadsAntigos } = await supabase
                 .from('leads_resumo')
                 .select('telefone, vendedor, ultimo_contato')
-                .lte('ultimo_contato', limite30d);
+                .lte('ultimo_contato', limite15d);
 
         if (!leadsAntigos || leadsAntigos.length === 0) {
-                console.log('✅ Nenhum lead com último contato >30d');
+                console.log('✅ Nenhum lead com último contato >15d');
                 return;
         }
 
@@ -3033,11 +3033,11 @@ async function classificarLeadsAntigos() {
                 }));
 
         if (leads.length === 0) {
-                console.log('✅ Nenhum lead antigo (>30d) com status "novo" para classificar');
+                console.log('✅ Nenhum lead antigo (>15d) com status "novo" para classificar');
                 return;
         }
 
-        console.log(`🤖 Classificando ${leads.length} lead(s) com mais de 30 dias...`);
+        console.log(`🤖 Classificando ${leads.length} lead(s) com mais de 15 dias...`);
         const contagem = { perdido: 0, pausado: 0, em_andamento: 0, erro: 0 };
 
         for (const lead of leads) {
@@ -3059,7 +3059,10 @@ async function classificarLeadsAntigos() {
 
                         const updatePayload = { telefone: lead.telefone, status };
                         // Marca o momento da transição pra 'perdido' — usado pela pesquisa de
-                        // feedback (enviarPesquisasLeadsPerdidos), que só dispara 24h depois disso.
+                        // feedback (enviarPesquisasLeadsPerdidos), que dispara 24h depois disso.
+                        // Vale tanto pra essa classificação automática (15+ dias sem contato)
+                        // quanto pra quando um vendedor marca perdido na hora pelo CRM — nos dois
+                        // casos o combinado é: 24h depois de virar 'perdido', manda a pesquisa.
                         if (status === 'perdido') {
                                 updatePayload.perdido_em = new Date().toISOString();
                                 updatePayload.feedback_perda_enviado = false;
@@ -3097,15 +3100,41 @@ async function processarBacklogNovos() {
 // ────────────────────────────────────────────────────────────────────────────
 
 // ── Pesquisa de "lead perdido" ──────────────────────────────────────────────
-// 24h depois do status virar 'perdido' (seja o vendedor marcando no CRM, seja a IA
-// classificando por inatividade em classificarLeadsAntigos), manda um TEMPLATE
-// aprovado pela Meta perguntando o que o lead achou do atendimento e o motivo de não
-// ter fechado a matrícula. Precisa ser template (não texto livre): por definição um
-// lead "perdido" já está inativo, então a janela de 24h quase sempre está fechada —
-// template é o único jeito confiável de alcançar ele mesmo assim. Sai pelo número
-// PRINCIPAL do bot.
+// 24h depois do status virar 'perdido' — seja o vendedor marcando na hora pelo CRM,
+// seja a classificação automática por 15+ dias sem contato (classificarLeadsAntigos)
+// — manda um TEMPLATE aprovado pela Meta perguntando o que o lead achou do
+// atendimento e o motivo de não ter fechado a matrícula. Precisa ser template (não
+// texto livre): por definição um lead "perdido" já está inativo, então a janela de
+// 24h quase sempre está fechada — template é o único jeito confiável de alcançar ele
+// mesmo assim. Sai pelo número PRINCIPAL do bot.
 async function enviarPesquisasLeadsPerdidos() {
         const limite24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const limiteExpirado = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+
+        // Rede de segurança: se por algum motivo esse sweep ficar dias sem rodar (bug,
+        // deploy, API fora do ar), NÃO manda uma pesquisa "atrasada" pra quem já
+        // esqueceu do assunto há quase uma semana — só zera perdido_em pra tirar da
+        // fila. Preferimos silenciosamente não perguntar a mandar fora de hora.
+        const { data: expirados } = await supabase
+                .from('status_de_leads')
+                .select('telefone')
+                .eq('status', 'perdido')
+                .eq('feedback_perda_enviado', false)
+                .not('perdido_em', 'is', null)
+                .lt('perdido_em', limiteExpirado);
+        if (expirados && expirados.length > 0) {
+                await supabase.from('status_de_leads')
+                        .update({ perdido_em: null })
+                        .in('telefone', expirados.map(l => l.telefone));
+                console.log(`⏳ ${expirados.length} pesquisa(s) de feedback expirada(s) sem enviar (mais de 5 dias na fila)`);
+        }
+
+        // Limite diário de 50 envios: evita disparar um lote grande de uma vez (ex: no
+        // dia em que o limiar de classificação automática mudou de 30 pra 15 dias, ou se
+        // o envio ficar alguns dias parado por algum motivo). Pega os mais antigos na
+        // fila primeiro (perdido_em ascendente), então quem está esperando há mais tempo
+        // é sempre priorizado — o resto simplesmente continua na fila pro dia seguinte.
+        const LIMITE_DIARIO_PESQUISAS = 50;
 
         const { data: leads, error } = await supabase
                 .from('status_de_leads')
@@ -3113,7 +3142,9 @@ async function enviarPesquisasLeadsPerdidos() {
                 .eq('status', 'perdido')
                 .eq('feedback_perda_enviado', false)
                 .not('perdido_em', 'is', null)
-                .lte('perdido_em', limite24h);
+                .lte('perdido_em', limite24h)
+                .order('perdido_em', { ascending: true })
+                .limit(LIMITE_DIARIO_PESQUISAS);
 
         if (error) {
                 console.error('❌ Erro ao buscar leads perdidos p/ pesquisa:', error.message);
@@ -3121,7 +3152,7 @@ async function enviarPesquisasLeadsPerdidos() {
         }
         if (!leads || leads.length === 0) return;
 
-        console.log(`📮 Enviando pesquisa de feedback (template) pra ${leads.length} lead(s) perdido(s)...`);
+        console.log(`📮 Enviando pesquisa de feedback (template) pra ${leads.length} lead(s) perdido(s) (limite diário: ${LIMITE_DIARIO_PESQUISAS})...`);
 
         for (const lead of leads) {
                 try {
@@ -3176,7 +3207,7 @@ function agendarPesquisasLeadsPerdidos() {
 
 // ── Classificação automática de leads antigos (backlog) ─────────────────────
 // Antes só rodava se alguém batesse manualmente em GET /processar-novos — não
-// havia nenhum agendamento, então leads parados >30 dias como 'novo' nunca
+// havia nenhum agendamento, então leads parados >15 dias como 'novo' nunca
 // viravam 'perdido' sozinhos, e a pesquisa de feedback (que só busca leads com
 // status='perdido') ficava sem gente pra mandar mesmo com vários leads frios.
 // Roda 1x por dia, antes do horário da pesquisa de leads perdidos (13h BRT).
@@ -3491,7 +3522,7 @@ app.listen(PORT, () => {
         agendarLembreteEscala();
         // Lembrete semanal de leads sem status pros vendedores, toda segunda 10h BRT
         agendarLembreteStatusVendedor();
-        // Classificação automática de leads antigos (>30d parados como 'novo' → perdido/pausado/em_andamento), 1x por dia às 10h BRT
+        // Classificação automática de leads antigos (>15d parados como 'novo' → perdido/pausado/em_andamento), 1x por dia às 10h BRT
         agendarClassificacaoLeadsAntigos();
         // Pesquisa de feedback de leads perdidos, seg-sex às 13h BRT
         agendarPesquisasLeadsPerdidos();
