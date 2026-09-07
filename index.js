@@ -3257,6 +3257,18 @@ async function gerarRelatorioMensal(opts = {}) {
         relatorioEmAndamento = true;
         console.log(preview ? '📋 Gerando PREVIEW do relatório mensal (não envia nada)...' : '📋 Gerando relatório mensal...');
 
+        // Trava de segurança: se alguma query travar sem nunca dar erro nem timeout (ex:
+        // uma chamada ao Supabase pendurada), essa flag ficaria presa em `true` pra
+        // sempre e ninguém mais conseguiria gerar relatório (nem preview) até reiniciar
+        // o servidor no Railway — foi exatamente o que aconteceu num teste. Depois de 5
+        // min, destrava à força mesmo que a geração original ainda esteja pendurada.
+        const travaSegurancaId = setTimeout(() => {
+                if (relatorioEmAndamento) {
+                        console.error('⏱️ Relatório mensal travado por mais de 5 min — destravando à força.');
+                        relatorioEmAndamento = false;
+                }
+        }, 5 * 60 * 1000);
+
         try {
                 // Mês anterior completo em horário de Brasília
                 const agora = new Date();
@@ -3474,6 +3486,27 @@ relatório. Máximo 2600 palavras no total.`;
                         return relatorioCompleto;
                 }
 
+                // Salva no Supabase pra aparecer na aba "Relatório Mensal" do CRM — não depende
+                // do WhatsApp ter entregue ou não (janela de 24h fechada, etc.), então o relatório
+                // sempre fica disponível pra consulta ali, mesmo se a mensagem falhar de entregar.
+                // upsert por mes_ano: se rodar de novo pro mesmo mês, atualiza em vez de duplicar.
+                const mesAno = `${inicioMes.getUTCFullYear()}-${String(inicioMes.getUTCMonth() + 1).padStart(2, '0')}`;
+                try {
+                        await supabase.from('relatorios_mensais').upsert({
+                                mes_ano: mesAno,
+                                mes_nome: nomeMes,
+                                texto: relatorioCompleto,
+                                total_leads: total,
+                                matriculados: contStatus.matriculado,
+                                taxa_conversao: total > 0 ? Math.round(contStatus.matriculado / total * 100) : 0,
+                                via_bot: viaBot,
+                                via_vendedor: total - viaBot,
+                                criado_em: new Date().toISOString()
+                        }, { onConflict: 'mes_ano' });
+                } catch (e) {
+                        console.error('❌ Erro ao salvar relatório mensal no Supabase (pra aba do CRM):', e.message);
+                }
+
                 await sendTemplateGerente('relatorio_mensal');
                 await salvarMensagem(NUMERO_GERENTE, '[Template: relatorio_mensal] Seu relatório mensal está pronto — os detalhes chegam a seguir.', 'sistema', 'bot', 'relatorio_mensal');
                 await new Promise(r => setTimeout(r, 1500));
@@ -3502,6 +3535,7 @@ relatório. Máximo 2600 palavras no total.`;
                 console.error('❌ Erro ao gerar relatório mensal:', err.message);
                 return null;
         } finally {
+                clearTimeout(travaSegurancaId);
                 relatorioEmAndamento = false;
         }
 }
