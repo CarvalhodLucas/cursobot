@@ -3290,7 +3290,16 @@ async function gerarRelatorioMensal(opts = {}) {
                         .eq('tem_msg_cliente', true);
 
                 if (errLeads) console.error('❌ Erro query leads:', errLeads.message);
-                console.log(`📋 Leads encontrados: ${leadsDoMes?.length || 0}`);
+
+                // Filtra números internos (gerente/Lucas) e qualquer DDI +34 (Espanha) — esses
+                // números são donas/sócias do curso conversando com os vendedores, não leads de
+                // verdade. Sem esse filtro eles entravam na amostra e a IA os analisava como se
+                // fossem clientes perdendo a venda, o que não faz sentido nenhum.
+                const leadsDoMesFiltrado = (leadsDoMes || []).filter(l => {
+                        const tel = String(l.telefone || '').replace(/\D/g, '');
+                        return !NUMEROS_INTERNOS_GESTAO.has(tel) && !tel.startsWith('34');
+                });
+                console.log(`📋 Leads encontrados: ${leadsDoMes?.length || 0} (${leadsDoMesFiltrado.length} após filtrar números internos/+34)`);
 
                 // 2. Todos os status
                 const { data: todosStatus } = await supabase
@@ -3307,7 +3316,7 @@ async function gerarRelatorioMensal(opts = {}) {
                 (todosStatus || []).forEach(s => { statusMap[s.telefone] = s; });
 
                 const porVendedorLeads = {};
-                (leadsDoMes || []).forEach(l => {
+                leadsDoMesFiltrado.forEach(l => {
                         const v = l.vendedor || 'desconhecido';
                         if (!porVendedorLeads[v]) porVendedorLeads[v] = [];
                         porVendedorLeads[v].push(l);
@@ -3339,8 +3348,15 @@ async function gerarRelatorioMensal(opts = {}) {
                                 if (!msgs || msgs.length === 0) continue;
                                 const st = statusMap[lead.telefone];
                                 conversasTexto += `\n--- Lead: ${st?.nome || lead.telefone} | Status: ${st?.status || 'sem status'} ---\n`;
+                                // Mídias (áudio/imagem/vídeo/documento) chegam como um rótulo tipo
+                                // "🎤 Áudio recebido" — o sistema NUNCA transcreve/lê o conteúdo. Marca
+                                // explicitamente como [MÍDIA - conteúdo desconhecido] pra IA não confundir
+                                // isso com uma mensagem de texto normal e inventar o que foi dito nela.
+                                const rotulosMidia = ['📷 Imagem recebida', '🎤 Áudio recebido', '🎥 Vídeo recebido', '📄 Documento recebido', '🌟 Figurinha recebida'];
                                 msgs.forEach(m => {
-                                        conversasTexto += `[${m.de}]: ${m.mensagem.substring(0, 200)}\n`;
+                                        const ehMidia = rotulosMidia.some(r => (m.mensagem || '').startsWith(r)) || /^\[(áudio|imagem|vídeo|documento)/i.test(m.mensagem || '');
+                                        const texto = ehMidia ? `${m.mensagem} [MÍDIA - conteúdo desconhecido, sistema não transcreve]` : (m.mensagem || '').substring(0, 200);
+                                        conversasTexto += `[${m.de}]: ${texto}\n`;
                                 });
 
                                 // Feedback direto do lead sobre por que não fechou (pesquisa pós-"perdido")
@@ -3361,18 +3377,18 @@ async function gerarRelatorioMensal(opts = {}) {
                                 }
                         }
                 }
-                const total       = leadsDoMes?.length || 0;
-                const viaBot      = (leadsDoMes || []).filter(l => l.tem_msg_bot).length;
+                const total       = leadsDoMesFiltrado.length;
+                const viaBot      = leadsDoMesFiltrado.filter(l => l.tem_msg_bot).length;
                 const contStatus  = { novo: 0, em_andamento: 0, matriculado: 0, aluno: 0, pausado: 0, perdido: 0, sem_status: 0 };
                 const comStatus   = new Set((todosStatus || []).map(s => s.telefone));
-                (leadsDoMes || []).forEach(l => {
+                leadsDoMesFiltrado.forEach(l => {
                         const s = statusMap[l.telefone]?.status;
                         if (s && contStatus[s] !== undefined) contStatus[s]++;
                         else if (!comStatus.has(l.telefone)) contStatus.sem_status++;
                 });
 
                 const porVendedor = {};
-                (leadsDoMes || []).forEach(l => {
+                leadsDoMesFiltrado.forEach(l => {
                         const v = l.vendedor || 'desconhecido';
                         if (!porVendedor[v]) porVendedor[v] = { total: 0, convertidos: 0 };
                         porVendedor[v].total++;
@@ -3396,6 +3412,15 @@ ${vendedoresTexto}
 
 AMOSTRA DE CONVERSAS POR VENDEDOR (matriculados, perdidos e em andamento de cada um):
 ${conversasTexto.substring(0, 14000)}
+
+REGRA IMPORTANTE SOBRE MÍDIAS: o sistema não transcreve áudio, imagem, vídeo ou
+documento — você só sabe que uma mídia FOI ENVIADA, nunca o que ela dizia ou
+mostrava. Mensagens marcadas como "[MÍDIA - conteúdo desconhecido...]" são só
+isso: um evento de envio. NUNCA invente ou presuma o conteúdo (ex: não diga que
+um áudio "explicou os diferenciais da turma" ou "criou conexão emocional") —
+isso não é informação real, é alucinação. Você pode no máximo comentar o
+COMPORTAMENTO (ex: "respondeu com áudio em vez de texto", "mandou 2 áudios
+seguidos sem esperar resposta"), nunca o conteúdo da mídia em si.
 
 Gere um relatório com exatamente estas seções:
 1. RESUMO EXECUTIVO (3-4 linhas)
