@@ -3407,7 +3407,7 @@ Gere um relatório com exatamente estas seções:
 5. RECOMENDAÇÕES PARA O PRÓXIMO MÊS (3 a 5 ações práticas e concretas, gerais pra equipe)
 
 Seja objetivo e direto, mas não corte a seção 2 — ela é a mais importante deste
-relatório. Máximo 1100 palavras no total.`;
+relatório. Máximo 2600 palavras no total.`;
 
                 // 6. Chamada OpenRouter com fallback entre modelos. DeepSeek V4 Flash é pago
                 // mas muito barato (~$0,001 por relatório, roda 1x/mês) e bem mais confiável/
@@ -3430,8 +3430,12 @@ relatório. Máximo 1100 palavras no total.`;
                                         model: modelo,
                                         messages: [{ role: 'user', content: prompt }],
                                         // Análise por vendedor deixou o relatório mais longo — 1500 tokens
-                                        // cortava a seção de performance no meio às vezes.
-                                        max_tokens: 2200
+                                        // cortava a seção de performance no meio às vezes, e mesmo 2200
+                                        // ainda cortava com 3 vendedores (confirmado via preview: relatório
+                                        // de agosto/2026 parou no meio da Taynara, sem as seções 3-5). Subiu
+                                        // pra 5000 com folga — custo extra é insignificante na DeepSeek V4
+                                        // Flash (report roda só 1x/mês).
+                                        max_tokens: 5000
                                 }, {
                                         headers: {
                                                 'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
