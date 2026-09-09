@@ -1247,6 +1247,14 @@ async function getHistorico(telefone) {
                         dadosLead[telefone].consentimentoDado = true;
 
                         // Busca nas mensagens do bot os dados já confirmados
+                        // Rastreia se a pesquisa de "lead perdido" foi enviada e ainda não teve
+                        // resposta — mesmo problema do jaAluno: sem isso, um restart do Railway
+                        // entre o envio da pesquisa e a resposta do cliente perdia a flag (só
+                        // existia em RAM), e a resposta caía no fluxo normal da IA em vez do
+                        // agradecimento — foi exatamente isso que gerou respostas erradas/repetidas
+                        // (ex: loop de "vou encaminhar pra coordenação") quando um deploy aconteceu
+                        // bem na janela entre o disparo em massa da pesquisa e as respostas.
+                        let aguardandoPesquisaPerdido = false;
                         data.forEach(m => {
                                 if (m.de === 'bot') {
                                         const nomeMatch = m.mensagem.match(/(?:👤|Nome).*?:\s*([^\n\*]+)/i);
@@ -1261,7 +1269,13 @@ async function getHistorico(telefone) {
                                 // flag jaAluno (só em RAM) se perdia e a IA voltava a perguntar
                                 // "você já é aluno?" depois de qualquer deploy.
                                 if (m.tipo === 'aluno') dadosLead[telefone].jaAluno = true;
+
+                                if (m.tipo === 'pesquisa_perdido') aguardandoPesquisaPerdido = true;
+                                else if (m.tipo === 'feedback_perdido' && m.de === 'cliente') aguardandoPesquisaPerdido = false;
                         });
+                        if (aguardandoPesquisaPerdido) {
+                                aguardandoFeedbackPerdido[telefone] = { vendedorSalvar: 'bot' };
+                        }
 
                         console.log(`📜 Histórico + dados carregados para ${telefone}`);
                 } else {
@@ -1541,14 +1555,22 @@ app.post('/webhook', async (req, res) => {
                 delete aguardandoFeedbackPerdido[telefone];
                 salvarEstadoBot(telefone);
                 await salvarMensagem(telefone, mensagem, 'cliente', origem.vendedorSalvar || 'bot', 'feedback_perdido', midiaUrl);
-                const agradecimento = 'Muito obrigado pelo retorno! Isso nos ajuda bastante a melhorar 🙏';
+
+                // Se a resposta der a entender que a pessoa já se matriculou (e o vendedor só não
+                // atualizou o CRM), o agradecimento padrão fica sem sentido/deselegante — pede
+                // desculpas em vez disso. Não muda status nem notifica vendedor (isso o Lucas
+                // pediu pra não fazer) — é só o texto que a IA manda de volta pro cliente.
+                const jaMatriculado = mensagem ? await respostaIndicaMatricula(mensagem) : false;
+                const resposta = jaMatriculado
+                        ? 'Opa, sentimos muito pelo equívoco! 🙏 Pelo visto sua matrícula já foi feita e nosso sistema não estava refletindo isso corretamente. Peço desculpas pelo transtorno!'
+                        : 'Muito obrigado pelo retorno! Isso nos ajuda bastante a melhorar 🙏';
                 try {
-                        await sendWhatsApp(telefone, agradecimento);
-                        await salvarMensagem(telefone, agradecimento, 'sistema', origem.vendedorSalvar || 'bot', 'feedback_perdido');
+                        await sendWhatsApp(telefone, resposta);
+                        await salvarMensagem(telefone, resposta, 'sistema', origem.vendedorSalvar || 'bot', 'feedback_perdido');
                 } catch (e) {
-                        console.error(`❌ Falha ao agradecer feedback de ${telefone}:`, e.response?.data || e.message);
+                        console.error(`❌ Falha ao responder feedback de ${telefone}:`, e.response?.data || e.message);
                 }
-                console.log(`📮 Feedback de lead perdido recebido de ${telefone}: "${mensagem}"`);
+                console.log(`📮 Feedback de lead perdido recebido de ${telefone}: "${mensagem}"${jaMatriculado ? ' (indica matrícula já feita — pedido desculpas)' : ''}`);
                 return;
         }
 
@@ -3027,6 +3049,46 @@ async function classificarLeadIA(conversaTexto) {
         }
 }
 
+// ── Detecta se a resposta à pesquisa de "lead perdido" indica que a pessoa já se
+// matriculou (ex: "achei que já tinha me matriculado", "já sou aluno") — nesse caso
+// o combinado (24h depois de virar 'perdido', pergunta o motivo de não ter fechado) não
+// faz sentido: a pessoa fechou e o vendedor só não atualizou o CRM. Sem essa checagem o
+// bot mandava um "obrigado, isso nos ajuda a melhorar" pra quem já é cliente — como se a
+// escola não soubesse que ele fechou, o que é constrangedor. Groq → Gemini, mesmo padrão
+// de classificarLeadIA; em caso de falha total assume que NÃO indica matrícula (mantém o
+// agradecimento padrão, que é a resposta mais segura na dúvida).
+async function respostaIndicaMatricula(mensagem) {
+        const systemPrompt = 'Você analisa a resposta de um ex-lead de uma escola de idiomas à pergunta "por que você não seguiu com a matrícula?". Responda APENAS "sim" se a resposta der a entender que a pessoa JÁ SE MATRICULOU ou já é aluna (ex: "já fiz minha matrícula", "já estou estudando aí", "achei que tinha concluído o cadastro", "sou aluno há X meses", "já pago mensalidade"). Responda APENAS "nao" em qualquer outro caso (dúvida sem confirmar matrícula, reclamação, feedback negativo, desistência, falta de interesse, preço, etc).';
+
+        try {
+                const resp = await axios.post(
+                        'https://api.groq.com/openai/v1/chat/completions',
+                        {
+                                model: 'openai/gpt-oss-120b',
+                                messages: [
+                                        { role: 'system', content: systemPrompt },
+                                        { role: 'user', content: mensagem || '' }
+                                ],
+                                max_tokens: 5,
+                                temperature: 0
+                        },
+                        { headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' }, timeout: 8000 }
+                );
+                return (resp.data.choices[0].message.content || '').trim().toLowerCase().includes('sim');
+        } catch (err) {
+                console.warn('⚠️ Groq falhou ao checar matrícula na resposta de feedback, tentando Gemini...', err.message);
+        }
+
+        try {
+                const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+                const result = await model.generateContent(`${systemPrompt}\n\n${mensagem || ''}`);
+                return result.response.text().trim().toLowerCase().includes('sim');
+        } catch (err) {
+                console.error('❌ Gemini também falhou ao checar matrícula na resposta de feedback:', err.message);
+                return false;
+        }
+}
+
 // ── Classifica automaticamente leads com mais de 15 dias sem atividade ───────
 async function classificarLeadsAntigos() {
         const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
@@ -3220,6 +3282,29 @@ async function enviarPesquisasLeadsPerdidos() {
         }
         if (!leads || leads.length === 0) return;
 
+        // Trava de segurança: nunca manda a pesquisa "sentimos sua falta" pra quem o
+        // histórico mostra que já foi ALUNO em algum momento — isso significa que o
+        // vendedor esqueceu de atualizar o status no CRM depois da matrícula, e a
+        // classificação automática (15+ dias sem contato) marcou como 'perdido' por
+        // engano. Sem essa trava a pessoa recebe uma pesquisa sem sentido perguntando
+        // por que não se matriculou. Também zera perdido_em pra tirar da fila (igual
+        // aos outros filtros acima), já que o vendedor precisa corrigir o status manual.
+        const { data: msgsAluno } = await supabase
+                .from('conversas')
+                .select('telefone')
+                .in('telefone', leads.map(l => l.telefone))
+                .eq('tipo', 'aluno');
+        const telefonesAluno = new Set((msgsAluno || []).map(m => m.telefone));
+        let leadsParaEnviar = leads;
+        if (telefonesAluno.size > 0) {
+                leadsParaEnviar = leads.filter(l => !telefonesAluno.has(l.telefone));
+                await supabase.from('status_de_leads')
+                        .update({ perdido_em: null })
+                        .in('telefone', [...telefonesAluno]);
+                console.log(`🎓 ${telefonesAluno.size} pesquisa(s) de feedback bloqueada(s) — histórico mostra que já é aluno (provável status desatualizado pelo vendedor)`);
+        }
+        if (leadsParaEnviar.length === 0) return;
+
         // O nome em status_de_leads.nome pode ter sido digitado manualmente pelo
         // vendedor no CRM (ex: copiado da agenda dele) — não necessariamente o nome
         // que o próprio lead usou na conversa. Pra pesquisa de feedback só usamos o
@@ -3227,7 +3312,7 @@ async function enviarPesquisasLeadsPerdidos() {
         // bot, que ecoa de volta uma mensagem "👤 Nome: X" só depois que o lead
         // informou o nome dele mesmo. Busca isso direto na tabela conversas (fonte
         // persistida, funciona mesmo após restart) em vez de confiar em status_de_leads.nome.
-        const telefones = leads.map(l => l.telefone);
+        const telefones = leadsParaEnviar.map(l => l.telefone);
         const { data: msgsNome } = await supabase
                 .from('conversas')
                 .select('telefone, mensagem')
@@ -3241,9 +3326,9 @@ async function enviarPesquisasLeadsPerdidos() {
                 if (match) nomeConfirmadoPorTelefone[m.telefone] = match[1].trim();
         });
 
-        console.log(`📮 Enviando pesquisa de feedback (template) pra ${leads.length} lead(s) perdido(s) (limite diário: ${LIMITE_DIARIO_PESQUISAS})...`);
+        console.log(`📮 Enviando pesquisa de feedback (template) pra ${leadsParaEnviar.length} lead(s) perdido(s) (limite diário: ${LIMITE_DIARIO_PESQUISAS})...`);
 
-        for (const lead of leads) {
+        for (const lead of leadsParaEnviar) {
                 try {
                         // Nunca usa lead.nome (CRM/vendedor) aqui — só o nome que o próprio lead
                         // confirmou na conversa com o bot, se houver.
