@@ -2968,8 +2968,13 @@ async function classificarLeadIA(conversaTexto) {
                 return 'perdido'; // fallback conservador
         }
 
-        // Tentativa 1 — Groq chave principal
-        for (const key of [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_2].filter(Boolean)) {
+        // Tentativa 1 — Groq chave principal.
+        // Classificação em massa (classificarLeadsAntigos) dispara centenas/milhares de
+        // chamadas seguidas e batia direto no limite de requisições por minuto da Groq
+        // (erro 429) — o pause de 300ms entre leads não bastava. Agora, ao levar um 429,
+        // espera o tempo que a própria Groq manda (header Retry-After) — ou 3s se não vier
+        // — e tenta a MESMA chave de novo uma vez antes de desistir dela e ir pra próxima.
+        async function chamarGroqComBackoff(key, tentativasRestantes = 1) {
                 try {
                         const resp = await axios.post(
                                 'https://api.groq.com/openai/v1/chat/completions',
@@ -2988,7 +2993,22 @@ async function classificarLeadIA(conversaTexto) {
                                 },
                                 { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 8000 }
                         );
-                        return parseStatus(resp.data.choices[0].message.content);
+                        return resp.data.choices[0].message.content;
+                } catch (err) {
+                        if (err.response?.status === 429 && tentativasRestantes > 0) {
+                                const retryAfter = Number(err.response.headers?.['retry-after']) || 3;
+                                console.warn(`⏳ Groq 429 (rate limit) — aguardando ${retryAfter}s e tentando de novo...`);
+                                await new Promise(r => setTimeout(r, retryAfter * 1000));
+                                return chamarGroqComBackoff(key, tentativasRestantes - 1);
+                        }
+                        throw err;
+                }
+        }
+
+        for (const key of [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_2].filter(Boolean)) {
+                try {
+                        const conteudo = await chamarGroqComBackoff(key);
+                        return parseStatus(conteudo);
                 } catch (err) {
                         console.warn('⚠️ Groq classificação falhou, tentando próximo...', err.message);
                 }
@@ -3094,8 +3114,10 @@ async function classificarLeadsAntigos() {
                         contagem[status] = (contagem[status] || 0) + 1;
                         console.log(`🤖 ${lead.nome || lead.telefone} → ${status}`);
 
-                        // Pausa de 300ms entre chamadas para não sobrecarregar Groq
-                        await new Promise(r => setTimeout(r, 300));
+                        // Pausa entre chamadas para não sobrecarregar Groq — 300ms não bastava
+                        // (batch de ~1500 leads gerava 429 constante, ver chamarGroqComBackoff acima).
+                        // 800ms mantém uma taxa sustentada mais segura; o backoff no 429 cobre picos.
+                        await new Promise(r => setTimeout(r, 800));
                 } catch (err) {
                         console.error(`❌ Erro ao classificar ${lead.telefone}:`, err.message);
                         contagem.erro++;
@@ -3126,6 +3148,7 @@ async function processarBacklogNovos() {
 async function enviarPesquisasLeadsPerdidos() {
         const limite24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         const limiteExpirado = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+        const limiteContatoAntigo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
         // Rede de segurança: se por algum motivo esse sweep ficar dias sem rodar (bug,
         // deploy, API fora do ar), NÃO manda uma pesquisa "atrasada" pra quem já
@@ -3143,6 +3166,35 @@ async function enviarPesquisasLeadsPerdidos() {
                         .update({ perdido_em: null })
                         .in('telefone', expirados.map(l => l.telefone));
                 console.log(`⏳ ${expirados.length} pesquisa(s) de feedback expirada(s) sem enviar (mais de 5 dias na fila)`);
+        }
+
+        // Corte por idade do CONTATO (não da classificação): a classificação em massa
+        // de leads antigos (classificarLeadsAntigos) roda sobre qualquer um com 15+ dias
+        // sem contato, sem limite superior — então um catch-up de backlog pode marcar
+        // como 'perdido' gente que não fala com a escola há meses. Não faz sentido
+        // mandar "sentimos sua falta" pra alguém que sumiu há 90+ dias. Só entra na fila
+        // de envio quem teve ÚLTIMA mensagem (leads_resumo.ultimo_contato) nos últimos
+        // 30 dias — os demais saem da fila silenciosamente, igual ao caso "expirado" acima.
+        const { data: candidatosFila } = await supabase
+                .from('status_de_leads')
+                .select('telefone')
+                .eq('status', 'perdido')
+                .eq('feedback_perda_enviado', false)
+                .not('perdido_em', 'is', null);
+        if (candidatosFila && candidatosFila.length > 0) {
+                const { data: contatosRecentes } = await supabase
+                        .from('leads_resumo')
+                        .select('telefone')
+                        .in('telefone', candidatosFila.map(l => l.telefone))
+                        .gte('ultimo_contato', limiteContatoAntigo);
+                const recentesSet = new Set((contatosRecentes || []).map(l => l.telefone));
+                const contatoAntigo = candidatosFila.filter(l => !recentesSet.has(l.telefone));
+                if (contatoAntigo.length > 0) {
+                        await supabase.from('status_de_leads')
+                                .update({ perdido_em: null })
+                                .in('telefone', contatoAntigo.map(l => l.telefone));
+                        console.log(`⏳ ${contatoAntigo.length} pesquisa(s) de feedback removida(s) da fila (último contato há mais de 30 dias)`);
+                }
         }
 
         // Limite diário de 50 envios: evita disparar um lote grande de uma vez (ex: no
@@ -3168,14 +3220,37 @@ async function enviarPesquisasLeadsPerdidos() {
         }
         if (!leads || leads.length === 0) return;
 
+        // O nome em status_de_leads.nome pode ter sido digitado manualmente pelo
+        // vendedor no CRM (ex: copiado da agenda dele) — não necessariamente o nome
+        // que o próprio lead usou na conversa. Pra pesquisa de feedback só usamos o
+        // nome se ele foi CONFIRMADO pelo lead através do fluxo de coleta de dados do
+        // bot, que ecoa de volta uma mensagem "👤 Nome: X" só depois que o lead
+        // informou o nome dele mesmo. Busca isso direto na tabela conversas (fonte
+        // persistida, funciona mesmo após restart) em vez de confiar em status_de_leads.nome.
+        const telefones = leads.map(l => l.telefone);
+        const { data: msgsNome } = await supabase
+                .from('conversas')
+                .select('telefone, mensagem')
+                .in('telefone', telefones)
+                .eq('de', 'bot')
+                .ilike('mensagem', '%Nome:%');
+        const nomeConfirmadoPorTelefone = {};
+        (msgsNome || []).forEach(m => {
+                if (nomeConfirmadoPorTelefone[m.telefone]) return; // já achou, mantém o primeiro
+                const match = (m.mensagem || '').match(/(?:👤|Nome).*?:\s*([^\n\*]+)/i);
+                if (match) nomeConfirmadoPorTelefone[m.telefone] = match[1].trim();
+        });
+
         console.log(`📮 Enviando pesquisa de feedback (template) pra ${leads.length} lead(s) perdido(s) (limite diário: ${LIMITE_DIARIO_PESQUISAS})...`);
 
         for (const lead of leads) {
                 try {
-                        const nomeLead = lead.nome || '';
+                        // Nunca usa lead.nome (CRM/vendedor) aqui — só o nome que o próprio lead
+                        // confirmou na conversa com o bot, se houver.
+                        const nomeLead = nomeConfirmadoPorTelefone[lead.telefone] || '';
                         const textoTemplate = `Oi, ${nomeLead || 'tudo bem'}! Aqui é do CNA Recreio 😊 Notamos que você não seguiu com a matrícula. Pode nos contar rapidinho o que achou do nosso atendimento e o motivo? Isso nos ajuda muito a melhorar 🙏`;
 
-                        await sendTemplate(lead.telefone, 'pesquisa_lead_perdido', [nomeLead]);
+                        await sendTemplate(lead.telefone, 'pesquisa_lead_perdido', [nomeLead || 'tudo bem']);
                         await salvarMensagem(lead.telefone, textoTemplate, 'sistema', 'bot', 'pesquisa_perdido');
                         aguardandoFeedbackPerdido[lead.telefone] = { vendedorSalvar: 'bot' };
                         salvarEstadoBot(lead.telefone);
