@@ -3018,7 +3018,13 @@ async function classificarLeadIA(conversaTexto) {
                         return resp.data.choices[0].message.content;
                 } catch (err) {
                         if (err.response?.status === 429 && tentativasRestantes > 0) {
-                                const retryAfter = Number(err.response.headers?.['retry-after']) || 3;
+                                // O header Retry-After da Groq às vezes manda esperar 1-3min (limite diário
+                                // esgotado, não só por minuto) — nesses casos esperar o tempo cheio trava a
+                                // fila inteira (um lead atrás do outro, cada um esperando minutos) e o
+                                // batch de milhares de leads levaria dias. Capa em 5s: se ainda vier 429
+                                // depois disso, desiste dessa chave rápido e cai pro próximo provedor
+                                // (OpenRouter/Gemini) em vez de ficar parado esperando a Groq liberar.
+                                const retryAfter = Math.min(Number(err.response.headers?.['retry-after']) || 3, 5);
                                 console.warn(`⏳ Groq 429 (rate limit) — aguardando ${retryAfter}s e tentando de novo...`);
                                 await new Promise(r => setTimeout(r, retryAfter * 1000));
                                 return chamarGroqComBackoff(key, tentativasRestantes - 1);
@@ -3036,7 +3042,23 @@ async function classificarLeadIA(conversaTexto) {
                 }
         }
 
-        // Tentativa 2 — Gemini (fallback). gemini-2.5-flash-lite também foi descontinuado
+        // Tentativa 2 — OpenRouter (deepseek-v4-flash, o modelo mais barato do catálogo —
+        // classificação é uma tarefa simples de uma palavra, não precisa do modelo Pro usado
+        // no relatório mensal). Entra ANTES do Gemini porque a Groq andou ficando indisponível
+        // por longos períodos (limite diário, não só por minuto — ver comentário acima), e o
+        // OpenRouter não compartilha esse limite, então tende a resolver mais rápido que
+        // esperar a Groq voltar.
+        try {
+                const conteudo = await chamarOpenRouter([
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: texto }
+                ], 10);
+                if (conteudo) return parseStatus(conteudo);
+        } catch (err) {
+                console.warn('⚠️ OpenRouter classificação também falhou, tentando Gemini...', err.message);
+        }
+
+        // Tentativa 3 — Gemini (fallback). gemini-2.5-flash-lite também foi descontinuado
         // pelo Google ("no longer available to new users") — troquei pro gemini-2.5-flash
         // normal, que já é usado (e confirmado funcionando) no resto do bot.
         try {
