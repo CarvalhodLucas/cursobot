@@ -2993,10 +2993,15 @@ async function classificarLeadIA(conversaTexto) {
         // Tentativa 1 — Groq chave principal.
         // Classificação em massa (classificarLeadsAntigos) dispara centenas/milhares de
         // chamadas seguidas e batia direto no limite de requisições por minuto da Groq
-        // (erro 429) — o pause de 300ms entre leads não bastava. Agora, ao levar um 429,
-        // espera o tempo que a própria Groq manda (header Retry-After) — ou 3s se não vier
-        // — e tenta a MESMA chave de novo uma vez antes de desistir dela e ir pra próxima.
-        async function chamarGroqComBackoff(key, tentativasRestantes = 1) {
+        // (erro 429) — o pause de 300ms entre leads não bastava.
+        // NÃO retenta a mesma chave: logs de produção mostraram a Groq 429 de forma
+        // CONTÍNUA por 40+ minutos seguidos (milhares de leads, um atrás do outro) — ou
+        // seja, não é um limite de curto prazo que vale a pena esperar, é o limite diário
+        // esgotado. Esperar e retentar a mesma chave nesse cenário só desperdiça ~5s por
+        // lead (o batch de ~1500 leads ia demorar horas à toa) sem nunca dar certo — então
+        // ao primeiro 429 já desiste dessa chave e cai direto pro OpenRouter (Tentativa 2),
+        // que resolve em frações de segundo por não compartilhar o limite da Groq.
+        async function chamarGroqComBackoff(key, tentativasRestantes = 0) {
                 try {
                         const resp = await axios.post(
                                 'https://api.groq.com/openai/v1/chat/completions',
@@ -3486,7 +3491,7 @@ async function gerarRelatorioMensal(opts = {}) {
                 // 2. Todos os status
                 const { data: todosStatus } = await supabase
                         .from('status_de_leads')
-                        .select('telefone, status, nome, anotacao');
+                        .select('telefone, status, nome, anotacao, data_matricula, vendedor');
 
                 // 3. Amostra de conversas POR VENDEDOR — cada um precisa da própria amostra
                 // (matriculados + perdidos + em andamento) pra IA conseguir avaliar o
@@ -3563,10 +3568,39 @@ async function gerarRelatorioMensal(opts = {}) {
                 const viaBot      = leadsDoMesFiltrado.filter(l => l.tem_msg_bot).length;
                 const contStatus  = { novo: 0, em_andamento: 0, matriculado: 0, aluno: 0, pausado: 0, perdido: 0, sem_status: 0 };
                 const comStatus   = new Set((todosStatus || []).map(s => s.telefone));
+
+                // Mês-alvo deste relatório no formato "YYYY-MM", pra comparar com
+                // `data_matricula` (que o vendedor pode ter setado pra um mês diferente
+                // do mês em que o lead teve atividade). Se `data_matricula` estiver
+                // preenchida, ela manda — se estiver vazia, cai no comportamento antigo
+                // (conta no mês em que o lead teve contato/status atual).
+                const targetMonthStr = `${inicioMes.getUTCFullYear()}-${String(inicioMes.getUTCMonth() + 1).padStart(2, '0')}`;
+                const telefonesJaContados = new Set(leadsDoMesFiltrado.map(l => l.telefone));
+                // Matrículas com data_matricula explicitamente setada pra este mês —
+                // contam aqui independente de terem tido atividade de contato no mês.
+                const matriculadosPorDataExplicita = (todosStatus || []).filter(s =>
+                        s.status === 'matriculado' && s.data_matricula && s.data_matricula.slice(0, 7) === targetMonthStr
+                );
+                const telefonesExplicitos = new Set(matriculadosPorDataExplicita.map(s => s.telefone));
+
                 leadsDoMesFiltrado.forEach(l => {
-                        const s = statusMap[l.telefone]?.status;
-                        if (s && contStatus[s] !== undefined) contStatus[s]++;
-                        else if (!comStatus.has(l.telefone)) contStatus.sem_status++;
+                        const st = statusMap[l.telefone];
+                        const s  = st?.status;
+                        if (s === 'matriculado') {
+                                // Só conta neste mês se não tiver data_matricula (fallback pro
+                                // comportamento antigo) ou se a data_matricula apontar pra este mês.
+                                // Se apontar pra outro mês, a matrícula é contada lá, não aqui.
+                                if (!st.data_matricula || telefonesExplicitos.has(l.telefone)) contStatus.matriculado++;
+                        } else if (s && contStatus[s] !== undefined) {
+                                contStatus[s]++;
+                        } else if (!comStatus.has(l.telefone)) {
+                                contStatus.sem_status++;
+                        }
+                });
+                // Matrículas com data_matricula neste mês mas sem atividade de contato
+                // neste mês (ex: lead conversou em outro mês, matrícula foi remarcada).
+                matriculadosPorDataExplicita.forEach(s => {
+                        if (!telefonesJaContados.has(s.telefone)) contStatus.matriculado++;
                 });
 
                 const porVendedor = {};
@@ -3574,7 +3608,21 @@ async function gerarRelatorioMensal(opts = {}) {
                         const v = l.vendedor || 'desconhecido';
                         if (!porVendedor[v]) porVendedor[v] = { total: 0, convertidos: 0 };
                         porVendedor[v].total++;
-                        if (statusMap[l.telefone]?.status === 'matriculado') porVendedor[v].convertidos++;
+                        const st = statusMap[l.telefone];
+                        if (st?.status === 'matriculado' && (!st.data_matricula || telefonesExplicitos.has(l.telefone))) {
+                                porVendedor[v].convertidos++;
+                        }
+                });
+                // Mesma lógica acima, pro corte por vendedor: soma conversões cuja
+                // data_matricula aponta pra este mês mas que não tiveram atividade de
+                // contato neste mês (não entraram no loop de cima). Usa o vendedor
+                // salvo em status_de_leads pra atribuição, já que pode não ter
+                // registro em leads_resumo pra este mês.
+                matriculadosPorDataExplicita.forEach(s => {
+                        if (telefonesJaContados.has(s.telefone)) return;
+                        const v = s.vendedor || 'desconhecido';
+                        if (!porVendedor[v]) porVendedor[v] = { total: 0, convertidos: 0 };
+                        porVendedor[v].convertidos++;
                 });
 
                 const vendedoresTexto = Object.entries(porVendedor)
