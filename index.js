@@ -2808,13 +2808,14 @@ function agendarResumoDiario() {
         setTimeout(() => {
                 enviarResumoDiario();
                 checkLeadsPausados();
-                // Dia 1 do mês — dispara também o relatório mensal
-                if (new Date().getUTCDate() === 1) gerarRelatorioMensal();
+                // Checagem diária (primeiros dias do mês) que gera o relatório mensal se
+                // ele ainda não existir — ver comentário de garantirRelatorioMensalDoMesAnterior.
+                garantirRelatorioMensalDoMesAnterior();
                 // Depois da primeira execução, repete a cada 24h
                 setInterval(() => {
                         enviarResumoDiario();
                         checkLeadsPausados();
-                        if (new Date().getUTCDate() === 1) gerarRelatorioMensal();
+                        garantirRelatorioMensalDoMesAnterior();
                 }, 24 * 60 * 60 * 1000);
         }, msAteProxima);
 }
@@ -3439,6 +3440,37 @@ function agendarClassificacaoLeadsAntigos() {
 // ── Relatório Mensal via OpenRouter ─────────────────────────────────────────
 // opts.preview=true monta o relatório (mesma lógica, mesmos dados) e RETORNA o texto,
 // sem mandar nada pelo WhatsApp — pra dar pra revisar antes de disparar de verdade.
+// O gatilho automático antigo só disparava o relatório mensal se o servidor
+// estivesse de pé bem no instante em que o relógio virasse o dia 1 (checagem
+// diária às 11:00 UTC). Se o Railway reiniciar/redeployar entre a última
+// checagem do dia 1 e a próxima (ex: redeploy no meio do dia 1, depois das
+// 11:00 UTC), `agendarResumoDiario()` reagenda pra 11:00 UTC do dia 2 — e como
+// a condição era `dia === 1`, o relatório do mês anterior simplesmente nunca
+// era gerado. Essa função substitui a checagem por dia fixo: todo dia (até o
+// 5º dia do mês, pra não ficar tentando pra sempre se a IA estiver fora do ar)
+// verifica se já existe relatório salvo pro mês anterior e, se não existir,
+// gera agora — autocorrige independente de quando o servidor esteve no ar.
+async function garantirRelatorioMensalDoMesAnterior() {
+        try {
+                const agora = new Date();
+                if (agora.getUTCDate() > 5) return; // só tenta recuperar nos primeiros dias do mês
+                const mesAnterior = new Date(Date.UTC(agora.getUTCFullYear(), agora.getUTCMonth() - 1, 1));
+                const mesAno = `${mesAnterior.getUTCFullYear()}-${String(mesAnterior.getUTCMonth() + 1).padStart(2, '0')}`;
+                const { data, error } = await supabase
+                        .from('relatorios_mensais')
+                        .select('mes_ano')
+                        .eq('mes_ano', mesAno)
+                        .maybeSingle();
+                if (error) { console.error('❌ Erro ao checar relatório mensal pendente:', error.message); return; }
+                if (!data) {
+                        console.log(`📋 Relatório mensal de ${mesAno} ainda não existe — gerando agora (checagem diária de recuperação).`);
+                        gerarRelatorioMensal();
+                }
+        } catch (e) {
+                console.error('❌ Erro ao checar relatório mensal pendente:', e.message);
+        }
+}
+
 async function gerarRelatorioMensal(opts = {}) {
         const preview = !!opts.preview;
         if (!NUMERO_GERENTE || !OPENROUTER_API_KEY) return null;
