@@ -3760,13 +3760,30 @@ relatório. Máximo 2600 palavras no total.`;
                                         },
                                         timeout: 60000
                                 });
-                                analise = response.data?.choices?.[0]?.message?.content;
-                                if (analise) { console.log(`📋 Modelo usado: ${modelo}`); break; }
+                                const conteudo = (response.data?.choices?.[0]?.message?.content || '').trim();
+                                // Confirmado em produção (relatório de setembro/2026, via logs do
+                                // Railway): deepseek-v4-pro devolveu `content` vazio (modelo de
+                                // raciocínio que às vezes gasta todo o max_tokens "pensando" e não
+                                // sobra nada pro texto final) e foi pulado — isso já funcionava, pois
+                                // string vazia é falsy. O problema real foi o PRÓXIMO da lista,
+                                // deepseek-v4-flash: devolveu uma resposta não-vazia mas bem curta
+                                // (o relatório inteiro, cabeçalho + análise, coube num único bloco de
+                                // 1500 caracteres — longe das ~5 seções/2600 palavras pedidas no
+                                // prompt), e como qualquer string não-vazia era truthy, foi aceita
+                                // assim mesmo. Agora exige um tamanho mínimo compatível com um
+                                // relatório de verdade (bem acima do que uma resposta truncada/rasa
+                                // teria) antes de aceitar a resposta do modelo.
+                                if (conteudo.length > 800) {
+                                        analise = conteudo;
+                                        console.log(`📋 Modelo usado: ${modelo} (${conteudo.length} caracteres)`);
+                                        break;
+                                }
+                                console.warn(`⚠️ Modelo ${modelo} devolveu conteúdo vazio/curto demais (${conteudo.length} chars). Prévia: "${conteudo.substring(0, 200)}". Tentando próximo...`);
                         } catch (e) {
                                 console.warn(`⚠️ Modelo ${modelo} falhou: ${e.response?.status || e.message}. Tentando próximo...`);
                         }
                 }
-                if (!analise) analise = 'Não foi possível gerar análise automática este mês (todos os modelos falharam).';
+                if (!analise) analise = 'Não foi possível gerar análise automática este mês (todos os modelos falharam ou devolveram conteúdo vazio).';
 
                 // 7. Monta e envia o relatório em partes (WhatsApp tem limite de caracteres)
                 const cabecalho = `📋 *RELATÓRIO MENSAL — ${nomeMes.toUpperCase()}*\n\n📊 Leads: ${total} | Matriculados: ${contStatus.matriculado} | Taxa: ${total > 0 ? Math.round(contStatus.matriculado / total * 100) : 0}%\n🤖 Via bot: ${viaBot} | 🧑 Via vendedor: ${total - viaBot}\n\n`;
