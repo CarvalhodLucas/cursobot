@@ -403,6 +403,17 @@ const SYSTEM_PROMPT = `Você é a assistente virtual de uma escola de idiomas lo
 Fale sempre em português, mas se alguem falar com voce em ingles, pode responder em ingles.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COMO PENSAR — ISSO VEM ANTES DE TODAS AS REGRAS ABAIXO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Você é uma atendente humana e atenta, não um formulário. Antes de cada resposta:
+1. Leia a conversa inteira e entenda quem é essa pessoa e o que ela quer AGORA. Mensagens que começam com colchetes, como "[Mensagem automática enviada pela escola]" ou "[Mensagem enviada pelo(a) vendedor(a) ...]", foram enviadas pela escola, NÃO pelo cliente — o cliente pode estar respondendo a elas.
+2. Use também o bloco "CONTEXTO INTERNO DO CRM" (quando existir) pra saber se a pessoa já é aluna, matriculada ou já foi atendida.
+3. O fluxo de qualificação (nome, idade, horário) é uma ferramenta, não uma obrigação. Só siga quando a pessoa realmente quer informações sobre matrícula.
+4. Se a pessoa estiver confusa, contrariada, disser que não pediu nada, que já é aluna (ou que o filho já estuda aqui), ou contestar algo que a escola mandou: PARE o roteiro. Reconheça o que ela disse, peça desculpas se a escola se enganou, e ofereça ajuda ou encaminhe para um humano. Nunca insista numa pergunta que ela ignorou ou contestou.
+5. Responda ao que ela perguntou de verdade. Na dúvida sobre o que ela quis dizer, pergunte de forma simples em vez de chutar.
+As regras abaixo continuam valendo, mas sempre aplicadas com esse bom senso.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ESTILO DE RESPOSTA — REGRAS RÍGIDAS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - Cada resposta deve ter no máximo 3 linhas no WhatsApp.
@@ -608,10 +619,78 @@ function garantirMencaoCursos(ragResultados, reply) {
         return `${reply}\n\n(Também temos curso de Programação e Robótica! 🤖)`;
 }
 
+// Monta o histórico que a IA vê direto do banco (fonte da verdade), a cada mensagem.
+// Antes o histórico vivia só na RAM e tinha dois furos que deixavam o bot "burro":
+//  1. Mensagens enviadas fora do fluxo da IA (pesquisa de lead perdido, templates,
+//     mensagens dos vendedores) nunca entravam na RAM — a IA não sabia que a escola
+//     tinha acabado de perguntar "por que você não seguiu com a matrícula?", então
+//     não entendia respostas como "Como assim? Que matrícula?".
+//  2. Depois de um restart, o histórico era recarregado do banco tratando TUDO que
+//     não era 'bot' como fala do cliente — inclusive a pesquisa e as mensagens dos
+//     vendedores. A IA achava que o próprio cliente tinha escrito aquilo.
+// Agora cada mensagem entra com o papel certo, e o que foi enviado pela escola mas
+// não pela IA vem marcado entre colchetes pra ela saber quem falou.
+async function carregarHistoricoParaIA(telefone, limite = 30) {
+        const { data, error } = await supabase
+                .from('conversas')
+                .select('mensagem, de, vendedor, tipo')
+                .eq('telefone', telefone)
+                .order('created_at', { ascending: false })
+                .limit(limite);
+        if (error) throw error;
+        return (data || []).reverse()
+                .filter(m => m.mensagem && String(m.mensagem).trim())
+                .map(m => {
+                        if (m.de === 'cliente') return { role: 'user', content: m.mensagem };
+                        if (m.de === 'bot') return { role: 'assistant', content: m.mensagem };
+                        if (m.de === 'vendedor') return { role: 'assistant', content: `[Mensagem enviada pelo(a) vendedor(a) ${m.vendedor || ''}] ${m.mensagem}` };
+                        return { role: 'assistant', content: `[Mensagem automática enviada pela escola] ${m.mensagem}` };
+                });
+}
+
+// Contexto do CRM pra IA: status, anotação e interesse que o vendedor registrou.
+// Sem isso o bot tratava como lead novo gente que o CRM já sabe que é aluno ou
+// matriculado, e fazia o roteiro de qualificação inteiro de novo.
+async function contextoCRMParaIA(telefone) {
+        try {
+                const { data } = await supabase
+                        .from('status_de_leads')
+                        .select('status, nome, interesse, anotacao, vendedor')
+                        .eq('telefone', telefone)
+                        .maybeSingle();
+                const hoje = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+                const linhas = [`Data de hoje: ${hoje}`];
+                if (data) {
+                        if (data.status) linhas.push(`Status no CRM: ${data.status}`);
+                        if (data.nome) linhas.push(`Nome registrado: ${data.nome}`);
+                        if (data.interesse) linhas.push(`Interesse registrado: ${data.interesse}`);
+                        if (data.vendedor) linhas.push(`Vendedor(a) responsável: ${data.vendedor}`);
+                        if (data.anotacao) linhas.push(`Anotação do vendedor: ${String(data.anotacao).slice(0, 300)}`);
+                } else {
+                        linhas.push('Sem registro no CRM (contato novo).');
+                }
+                return `
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONTEXTO INTERNO DO CRM — USE PARA ENTENDER A PESSOA, NUNCA CITE ISSO PRO CLIENTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${linhas.join('\n')}
+Se o status for "matriculado" ou "aluno", ou a anotação indicar isso, a pessoa NÃO é um lead novo: não faça o fluxo de qualificação, ajude no que ela pedir ou encaminhe pra coordenação. Se o status for "perdido" e ela voltou a falar, trate com naturalidade como alguém retomando o contato.`;
+        } catch (e) {
+                console.warn('⚠️ Não deu pra buscar contexto do CRM pra IA:', e.message);
+                return '';
+        }
+}
+
 async function askAI(telefone, mensagem) {
-        if (!conversas[telefone]) conversas[telefone] = [];
+        try {
+                conversas[telefone] = await carregarHistoricoParaIA(telefone);
+        } catch (e) {
+                console.warn(`⚠️ Falha ao carregar histórico do banco pra ${telefone}, usando o da memória:`, e.message);
+                if (!conversas[telefone]) conversas[telefone] = [];
+        }
         conversas[telefone].push({ role: 'user', content: mensagem });
-        if (conversas[telefone].length > 20) conversas[telefone] = conversas[telefone].slice(-20);
+        if (conversas[telefone].length > 30) conversas[telefone] = conversas[telefone].slice(-30);
 
         // Busca RAG usando o contexto das últimas 3 mensagens para pegar referências como "15" respondendo a "qual a sua idade"
         const contextoRecente = conversas[telefone].slice(-3).map(m => m.content).join(' ');
@@ -632,6 +711,8 @@ parafraseie nomes próprios ou palavras específicas (ex: "Oferecemos", nomes de
 copie a grafia exatamente como está escrita acima.`;
                 console.log(`🧠 Contexto RAG injetado (${ragResultados.length} itens)`);
         }
+
+        systemPromptFinal += await contextoCRMParaIA(telefone);
 
         // Após injetar o RAG, injetar também os dados já coletados
         const dados = dadosLead[telefone];
@@ -1552,6 +1633,41 @@ app.post('/webhook', async (req, res) => {
 
         // Resposta da pesquisa de "lead perdido" — não deixa cair no fluxo normal da IA
         // (que perguntaria "você já é aluno?" de novo, sem sentido nesse contexto).
+        // Antes QUALQUER primeira resposta virava feedback e levava um "obrigado pelo
+        // retorno" — inclusive "Bom dia", respostas automáticas de empresa, "Como assim?
+        // Que matrícula?" e até lead pedindo preço. Agora a IA classifica a resposta
+        // primeiro e só trata como feedback o que de fato é feedback.
+        let tipoRespostaPesquisa = 'FEEDBACK';
+        if (aguardandoFeedbackPerdido[telefone] && mensagem) {
+                tipoRespostaPesquisa = await classificarRespostaPesquisa(mensagem);
+                console.log(`📮 Resposta à pesquisa de ${telefone} classificada como ${tipoRespostaPesquisa}: "${mensagem}"`);
+        }
+        if (aguardandoFeedbackPerdido[telefone] && tipoRespostaPesquisa === 'OUTRO') {
+                // Cumprimento solto ou resposta automática: registra, não responde e continua
+                // esperando o feedback de verdade.
+                await salvarMensagem(telefone, mensagem, 'cliente', aguardandoFeedbackPerdido[telefone].vendedorSalvar || 'bot', 'desconhecido', midiaUrl);
+                return;
+        }
+        if (aguardandoFeedbackPerdido[telefone] && tipoRespostaPesquisa === 'CONFUSO') {
+                const origem = aguardandoFeedbackPerdido[telefone];
+                delete aguardandoFeedbackPerdido[telefone];
+                salvarEstadoBot(telefone);
+                const desculpa = 'Peço desculpas! Essa mensagem foi enviada por engano pelo nosso sistema, pode desconsiderar 🙏 Se precisar de algo, é só chamar por aqui.';
+                await salvarMensagem(telefone, mensagem, 'cliente', origem.vendedorSalvar || 'bot', 'desconhecido', midiaUrl);
+                try {
+                        await sendWhatsApp(telefone, desculpa);
+                        await salvarMensagem(telefone, desculpa, 'bot', origem.vendedorSalvar || 'bot', 'desconhecido');
+                } catch (e) {
+                        console.error(`❌ Falha ao pedir desculpas pela pesquisa pra ${telefone}:`, e.response?.data || e.message);
+                }
+                return;
+        }
+        if (aguardandoFeedbackPerdido[telefone] && tipoRespostaPesquisa === 'INTERESSE') {
+                // Lead que voltou interessado: sai do modo pesquisa e cai no atendimento
+                // normal da IA (que agora enxerga a pesquisa no histórico).
+                delete aguardandoFeedbackPerdido[telefone];
+                salvarEstadoBot(telefone);
+        }
         if (aguardandoFeedbackPerdido[telefone]) {
                 const origem = aguardandoFeedbackPerdido[telefone];
                 delete aguardandoFeedbackPerdido[telefone];
@@ -2306,10 +2422,14 @@ app.get('/classificar-antigos', async (req, res) => {
         if (!inativos.length) return res.json({ ok: true, msg: 'Nenhum lead inativo há mais de 30 dias.', total: 0 });
 
         // 4. Dos inativos, pega só os sem status ou com status "novo"
-        const { data: comStatus } = await supabase
-                .from('status_de_leads')
-                .select('telefone, status, nome')
-                .in('telefone', inativos);
+        // Em lotes (ver selectEmLotes) — com `.in()` único falhava calado e todo
+        // inativo era tratado como "sem status", sobrescrevendo status reais.
+        let comStatus;
+        try {
+                comStatus = await selectEmLotes('status_de_leads', 'telefone, status, nome', 'telefone', inativos);
+        } catch (e) {
+                return res.status(500).json({ ok: false, msg: e.message });
+        }
 
         const statusMap = {};
         (comStatus || []).forEach(s => { statusMap[s.telefone] = s; });
@@ -2867,13 +2987,11 @@ async function contarLeadsAbertosPorVendedor(nomeVendedor) {
         if (!leadsVendedor || leadsVendedor.length === 0) return 0;
 
         const telefones = leadsVendedor.map(l => l.telefone);
-        const { data: statusExistentes } = await supabase
-                .from('status_de_leads')
-                .select('telefone, status')
-                .in('telefone', telefones);
+        // Em lotes (ver selectEmLotes) — um vendedor pode ter centenas de leads.
+        const statusExistentes = await selectEmLotes('status_de_leads', 'telefone, status', 'telefone', telefones);
 
         const statusMap = {};
-        (statusExistentes || []).forEach(s => { statusMap[s.telefone] = s.status; });
+        statusExistentes.forEach(s => { statusMap[s.telefone] = s.status; });
 
         // "Em aberto" = sem entrada em status_de_leads OU ainda com status 'novo'
         return telefones.filter(t => !statusMap[t] || statusMap[t] === 'novo').length;
@@ -3087,6 +3205,46 @@ async function classificarLeadIA(conversaTexto) {
 // escola não soubesse que ele fechou, o que é constrangedor. Groq → Gemini, mesmo padrão
 // de classificarLeadIA; em caso de falha total assume que NÃO indica matrícula (mantém o
 // agradecimento padrão, que é a resposta mais segura na dúvida).
+// Classifica a resposta à pesquisa de lead perdido. Tenta Groq (2 chaves) e depois
+// OpenRouter. Se tudo falhar, devolve FEEDBACK (o comportamento antigo).
+async function classificarRespostaPesquisa(mensagem) {
+        const prompt = `A escola de idiomas mandou para esta pessoa a mensagem: "Notamos que você não seguiu com a matrícula. Pode nos contar o que achou do nosso atendimento e o motivo?"
+
+A pessoa respondeu: "${String(mensagem).slice(0, 600)}"
+
+Classifique a resposta em UMA destas categorias e responda só com a palavra:
+FEEDBACK = opina sobre o atendimento ou diz o motivo de não ter seguido (inclui "não tenho interesse", "achei caro", "fui pra outra escola", "já me matriculei")
+CONFUSO = não entendeu, diz que nunca pediu matrícula, que já é aluno(a) ou que o filho já estuda lá, ou que a mensagem não faz sentido pra ela
+INTERESSE = quer informações, preço, horários, ou quer se matricular agora
+OUTRO = só cumprimento (ex: "bom dia"), resposta automática de empresa, ou algo sem relação`;
+        const extrair = txt => {
+                const m = String(txt || '').toUpperCase().match(/FEEDBACK|CONFUSO|INTERESSE|OUTRO/);
+                return m ? m[0] : null;
+        };
+        for (const key of [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_2].filter(Boolean)) {
+                try {
+                        const resp = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+                                model: 'openai/gpt-oss-120b',
+                                messages: [{ role: 'user', content: prompt }],
+                                temperature: 0,
+                                reasoning_effort: 'low',
+                                max_tokens: 400
+                        }, { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 10000 });
+                        const cat = extrair(resp.data?.choices?.[0]?.message?.content);
+                        if (cat) return cat;
+                } catch (e) {
+                        console.warn('⚠️ Groq falhou ao classificar resposta da pesquisa:', e.response?.status || e.message);
+                }
+        }
+        try {
+                const cat = extrair(await chamarOpenRouter([{ role: 'user', content: prompt }], 400));
+                if (cat) return cat;
+        } catch (e) {
+                console.warn('⚠️ OpenRouter falhou ao classificar resposta da pesquisa:', e.message);
+        }
+        return 'FEEDBACK';
+}
+
 async function respostaIndicaMatricula(mensagem) {
         const systemPrompt = 'Você analisa a resposta de um ex-lead de uma escola de idiomas à pergunta "por que você não seguiu com a matrícula?". Responda APENAS "sim" se a resposta der a entender que a pessoa JÁ SE MATRICULOU ou já é aluna (ex: "já fiz minha matrícula", "já estou estudando aí", "achei que tinha concluído o cadastro", "sou aluno há X meses", "já pago mensalidade"). Responda APENAS "nao" em qualquer outro caso (dúvida sem confirmar matrícula, reclamação, feedback negativo, desistência, falta de interesse, preço, etc).';
 
@@ -3119,6 +3277,35 @@ async function respostaIndicaMatricula(mensagem) {
         }
 }
 
+// ── Consultas `.in()` em lotes ───────────────────────────────────────────────
+// O supabase-js manda os filtros na URL. Um `.in('telefone', [...])` com ~1600
+// telefones gera uma URL de ~25KB, que estoura o limite e a requisição falha —
+// e o supabase-js NÃO lança exceção, só devolve { data: null, error }. Isso fazia
+// o código seguir como se a tabela estivesse vazia (confirmado nos logs de
+// set-out/2026: classificarLeadsAntigos reprocessava os mesmos ~1600 leads TODO
+// dia, sobrescrevendo status e resetando perdido_em). Divide em lotes e lança
+// erro se algum lote falhar, pra quem chama nunca confundir "falhou" com "vazio".
+const TAMANHO_LOTE_IN = 150;
+
+async function selectEmLotes(tabela, colunas, coluna, valores, filtroExtra = q => q) {
+        const resultado = [];
+        for (let i = 0; i < valores.length; i += TAMANHO_LOTE_IN) {
+                const lote = valores.slice(i, i + TAMANHO_LOTE_IN);
+                const { data, error } = await filtroExtra(supabase.from(tabela).select(colunas).in(coluna, lote));
+                if (error) throw new Error(`select em ${tabela} falhou: ${error.message}`);
+                resultado.push(...(data || []));
+        }
+        return resultado;
+}
+
+async function updateEmLotes(tabela, valoresUpdate, coluna, valores) {
+        for (let i = 0; i < valores.length; i += TAMANHO_LOTE_IN) {
+                const lote = valores.slice(i, i + TAMANHO_LOTE_IN);
+                const { error } = await supabase.from(tabela).update(valoresUpdate).in(coluna, lote);
+                if (error) throw new Error(`update em ${tabela} falhou: ${error.message}`);
+        }
+}
+
 // ── Classifica automaticamente leads com mais de 15 dias sem atividade ───────
 async function classificarLeadsAntigos() {
         const limite15d = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString();
@@ -3144,10 +3331,18 @@ async function classificarLeadsAntigos() {
         // classificação automática — o mesmo critério "sem linha OU status='novo'"
         // já é usado em contarLeadsEmAberto(), só não estava replicado aqui.
         const telefones = leadsAntigos.map(l => l.telefone);
-        const { data: statusExistentes } = await supabase
-                .from('status_de_leads')
-                .select('telefone, status, nome, vendedor')
-                .in('telefone', telefones);
+        // Em lotes: com `.in()` único essa consulta falhava (URL grande demais),
+        // statusMap ficava vazio e TODO lead antigo era tratado como "sem status" —
+        // inclusive matriculados/alunos, que eram sobrescritos pra 'perdido'. Se a
+        // consulta falhar, aborta: é melhor não classificar nada do que sobrescrever
+        // status que o vendedor definiu.
+        let statusExistentes;
+        try {
+                statusExistentes = await selectEmLotes('status_de_leads', 'telefone, status, nome, vendedor', 'telefone', telefones);
+        } catch (e) {
+                console.error('❌ Classificação de leads antigos abortada — não deu pra ler status_de_leads:', e.message);
+                return;
+        }
 
         const statusMap = {};
         (statusExistentes || []).forEach(s => { statusMap[s.telefone] = s; });
@@ -3254,10 +3449,12 @@ async function enviarPesquisasLeadsPerdidos() {
                 .not('perdido_em', 'is', null)
                 .lt('perdido_em', limiteExpirado);
         if (expirados && expirados.length > 0) {
-                await supabase.from('status_de_leads')
-                        .update({ perdido_em: null })
-                        .in('telefone', expirados.map(l => l.telefone));
-                console.log(`⏳ ${expirados.length} pesquisa(s) de feedback expirada(s) sem enviar (mais de 5 dias na fila)`);
+                try {
+                        await updateEmLotes('status_de_leads', { perdido_em: null }, 'telefone', expirados.map(l => l.telefone));
+                        console.log(`⏳ ${expirados.length} pesquisa(s) de feedback expirada(s) sem enviar (mais de 5 dias na fila)`);
+                } catch (e) {
+                        console.error('❌ Erro ao tirar pesquisas expiradas da fila:', e.message);
+                }
         }
 
         // Corte por idade do CONTATO (não da classificação): a classificação em massa
@@ -3274,18 +3471,25 @@ async function enviarPesquisasLeadsPerdidos() {
                 .eq('feedback_perda_enviado', false)
                 .not('perdido_em', 'is', null);
         if (candidatosFila && candidatosFila.length > 0) {
-                const { data: contatosRecentes } = await supabase
-                        .from('leads_resumo')
-                        .select('telefone')
-                        .in('telefone', candidatosFila.map(l => l.telefone))
-                        .gte('ultimo_contato', limiteContatoAntigo);
-                const recentesSet = new Set((contatosRecentes || []).map(l => l.telefone));
-                const contatoAntigo = candidatosFila.filter(l => !recentesSet.has(l.telefone));
-                if (contatoAntigo.length > 0) {
-                        await supabase.from('status_de_leads')
-                                .update({ perdido_em: null })
-                                .in('telefone', contatoAntigo.map(l => l.telefone));
-                        console.log(`⏳ ${contatoAntigo.length} pesquisa(s) de feedback removida(s) da fila (último contato há mais de 30 dias)`);
+                // Em lotes — com `.in()` único essa consulta falhava calada, contatosRecentes
+                // vinha null e o filtro de 30 dias não funcionava (o update de remoção também
+                // falhava, então os mesmos ~1600 "removidos" voltavam todo dia). Se falhar,
+                // aborta o envio do dia em vez de mandar pesquisa pra quem não deveria.
+                try {
+                        const contatosRecentes = await selectEmLotes(
+                                'leads_resumo', 'telefone', 'telefone',
+                                candidatosFila.map(l => l.telefone),
+                                q => q.gte('ultimo_contato', limiteContatoAntigo)
+                        );
+                        const recentesSet = new Set(contatosRecentes.map(l => l.telefone));
+                        const contatoAntigo = candidatosFila.filter(l => !recentesSet.has(l.telefone));
+                        if (contatoAntigo.length > 0) {
+                                await updateEmLotes('status_de_leads', { perdido_em: null }, 'telefone', contatoAntigo.map(l => l.telefone));
+                                console.log(`⏳ ${contatoAntigo.length} pesquisa(s) de feedback removida(s) da fila (último contato há mais de 30 dias)`);
+                        }
+                } catch (e) {
+                        console.error('❌ Pesquisas de lead perdido do dia canceladas — falha ao filtrar a fila:', e.message);
+                        return;
                 }
         }
 
