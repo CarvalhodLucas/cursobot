@@ -24,10 +24,10 @@ where status = 'perdido' and telefone in (
 update status_de_leads set status = 'pausado', perdido_em = null
 where status = 'perdido' and data_retorno is not null;
 
--- Quem JÁ recebeu a pesquisa não deve receber de novo (a reclassificação diária zerava essa flag)
-update status_de_leads set feedback_perda_enviado = true
-where status = 'perdido' and feedback_perda_enviado = false
-  and telefone in (select distinct telefone from conversas where tipo = 'pesquisa_perdido');
+-- Decisão: a pesquisa de lead perdido só vale pra quem virar 'perdido' a partir de 04/10/2026.
+-- Tira TODO MUNDO que já está perdido da fila (e marca como enviado, pra nunca entrar de novo).
+update status_de_leads set feedback_perda_enviado = true, perdido_em = null
+where status = 'perdido' and feedback_perda_enviado = false;
 
 commit;
 

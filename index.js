@@ -189,7 +189,7 @@ function escolherPorFila(vendedoresAtivos) {
 
 // Status do bot para o CRM
 const botStatus = {
-        modelo: 'groq', // 'groq' | 'groq_2' | 'gemini'
+        modelo: 'deepseek', // 'deepseek' | 'groq' | 'groq_2' | 'gemini'
         fallbacksHoje: 0,
         ultimoWebhook: null
 };
@@ -594,29 +594,34 @@ async function askGroq(telefone, mensagem, apiKey, systemPromptFinal) {
         return response.data.choices[0].message.content;
 }
 
-// Rede de segurança: a instrução no prompt pra "não cortar itens da lista" ajuda, mas
-// não garante 100% — modelo de linguagem pode continuar parafraseando e esquecendo um
-// item mesmo assim (confirmado na prática mais de uma vez com o curso de Programação e
-// Robótica). Se a entrada "cursos" da base de conhecimento entrou no contexto dessa
-// resposta e o texto gerado não menciona Robótica, completa na mão — assim o cliente
-// nunca deixa de saber que esse curso existe, independente do que a IA decidiu escrever.
-function garantirMencaoCursos(ragResultados, reply) {
-        const entrouCursos = (ragResultados || []).some(r => r.categoria === 'cursos');
-        if (!entrouCursos) return reply;
-        // Checa com e sem acento (o modelo às vezes escreve "Robotica" sem acentuar)
-        const lower = reply.toLowerCase();
-        if (lower.includes('robótic') || lower.includes('robotic')) return reply; // já mencionou, não mexe
+// Modelo principal do bot (OpenRouter). O DeepSeek V4 Flash entende melhor o que a
+// pessoa quis dizer do que o gpt-oss-120b da Groq, e continua barato. O raciocínio
+// interno vai desligado pra resposta sair rápida — as mensagens são curtas.
+const MODELO_BOT_PRINCIPAL = 'deepseek/deepseek-v4-flash';
 
-        // O item "cursos" da base tem palavras-chave bem amplas (curso, inglês, espanhol,
-        // disponível, oferecem, idioma) e acaba entrando no RAG até em perguntas específicas
-        // sobre UM curso só (ex: "tem curso de inglês pra criança?"). Só faz sentido forçar a
-        // menção da robótica quando a resposta está de fato enumerando o catálogo completo —
-        // ou seja, cita inglês E espanhol juntos. Fora isso, a nota fica fora de contexto.
-        const mencionaIngles   = lower.includes('ingles') || lower.includes('inglês');
-        const mencionaEspanhol = lower.includes('espanhol');
-        if (!mencionaIngles || !mencionaEspanhol) return reply;
-
-        return `${reply}\n\n(Também temos curso de Programação e Robótica! 🤖)`;
+async function askOpenRouterBot(telefone, systemPromptFinal) {
+        const resp = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+                model: MODELO_BOT_PRINCIPAL,
+                messages: [
+                        { role: 'system', content: systemPromptFinal },
+                        ...conversas[telefone]
+                ],
+                max_tokens: 600,
+                temperature: 0.6,
+                reasoning: { enabled: false }
+        }, {
+                headers: {
+                        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                        'Content-Type': 'application/json',
+                        'HTTP-Referer': 'https://cursobot-production.up.railway.app',
+                        'X-Title': 'Studio Rastro Bot'
+                },
+                timeout: 20000
+        });
+        const conteudo = (resp.data?.choices?.[0]?.message?.content || '').trim();
+        // Resposta vazia conta como falha, pra cair no próximo modelo em vez de mandar nada.
+        if (!conteudo) throw new Error('resposta vazia do modelo');
+        return conteudo;
 }
 
 // Monta o histórico que a IA vê direto do banco (fonte da verdade), a cada mensagem.
@@ -692,24 +697,34 @@ async function askAI(telefone, mensagem) {
         conversas[telefone].push({ role: 'user', content: mensagem });
         if (conversas[telefone].length > 30) conversas[telefone] = conversas[telefone].slice(-30);
 
-        // Busca RAG usando o contexto das últimas 3 mensagens para pegar referências como "15" respondendo a "qual a sua idade"
-        const contextoRecente = conversas[telefone].slice(-3).map(m => m.content).join(' ');
-        const ragResultados = await buscarRAG(contextoRecente);
+        // Base de conhecimento INTEIRA em toda mensagem. Antes era filtrada por
+        // palavra-chave (buscarRAG): se o cliente usava uma palavra que não estava nas
+        // palavras-chave do item ("vocês abrem de manhã?" sem "manhã" cadastrado), a IA
+        // não recebia a informação e respondia sem saber. A base é pequena (~24 itens,
+        // ~3 mil caracteres), então mandar tudo custa praticamente nada e a IA decide
+        // sozinha o que é relevante — como uma atendente com a folha de informações na mão.
+        const baseCompleta = await getBaseConhecimento();
         let systemPromptFinal = SYSTEM_PROMPT;
-        if (ragResultados.length > 0) {
-                const contextoRAG = ragResultados.map(r => `- ${r.resposta}`).join('\n');
+        if (baseCompleta.length > 0) {
+                const porCategoria = {};
+                baseCompleta.forEach(item => {
+                        if (!item.resposta) return;
+                        const cat = (item.categoria || 'geral').replace(/_/g, ' ').trim() || 'geral';
+                        (porCategoria[cat] = porCategoria[cat] || []).push(item.resposta.trim());
+                });
+                const textoBase = Object.entries(porCategoria)
+                        .map(([cat, respostas]) => `[${cat}]\n${respostas.join('\n')}`)
+                        .join('\n\n');
                 systemPromptFinal = `${SYSTEM_PROMPT}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 INFORMAÇÕES VERIFICADAS DA ESCOLA — USE APENAS ESTAS, NÃO INVENTE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${contextoRAG}
+${textoBase}
 
-Ao responder usando o texto acima: reproduza as informações por completo, sem resumir
-nem cortar itens de uma lista. Se o texto menciona 3 cursos, cite os 3 — nunca só 2. Não
-parafraseie nomes próprios ou palavras específicas (ex: "Oferecemos", nomes de cursos) —
-copie a grafia exatamente como está escrita acima.`;
-                console.log(`🧠 Contexto RAG injetado (${ragResultados.length} itens)`);
+Use só o que for relevante pra pergunta do cliente — não despeje tudo. Quando listar algo
+(ex: cursos), cite todos os itens, sem cortar. Copie nomes próprios e nomes de cursos
+exatamente como estão escritos acima. Se a resposta não estiver aqui, não invente.`;
         }
 
         systemPromptFinal += await contextoCRMParaIA(telefone);
@@ -764,11 +779,24 @@ ${dadosColetados.join('\n')}
 IMPORTANTE: Esses dados já foram coletados. NÃO peça nome, idade ou horário novamente. Se o cliente quiser corrigir algum dado, atualize e mostre a confirmação.`;
         }
 
-        // Tentativa 1 — Groq chave principal
+        // Tentativa 1 — DeepSeek V4 Flash via OpenRouter (modelo principal). Entende
+        // melhor nuance e contexto que o gpt-oss-120b da Groq, que seguia o roteiro ao
+        // pé da letra. Groq e Gemini ficam como reserva.
+        if (process.env.OPENROUTER_API_KEY) {
+                try {
+                        const reply = await askOpenRouterBot(telefone, systemPromptFinal);
+                        conversas[telefone].push({ role: 'assistant', content: reply });
+                        botStatus.modelo = 'deepseek';
+                        return reply;
+                } catch (err) {
+                        console.warn(`⚠️ DeepSeek (OpenRouter) falhou, caindo pra Groq:`, err.response?.status || err.message);
+                }
+        }
+
+        // Tentativa 2 — Groq chave principal
         if (process.env.GROQ_API_KEY) {
                 try {
-                        let reply = await askGroq(telefone, mensagem, process.env.GROQ_API_KEY, systemPromptFinal);
-                        reply = garantirMencaoCursos(ragResultados, reply);
+                        const reply = await askGroq(telefone, mensagem, process.env.GROQ_API_KEY, systemPromptFinal);
                         conversas[telefone].push({ role: 'assistant', content: reply });
                         botStatus.modelo = 'groq';
                         return reply;
@@ -778,11 +806,10 @@ IMPORTANTE: Esses dados já foram coletados. NÃO peça nome, idade ou horário 
                 }
         }
 
-        // Tentativa 2 — Groq chave reserva
+        // Tentativa 3 — Groq chave reserva
         if (process.env.GROQ_API_KEY_2) {
                 try {
-                        let reply = await askGroq(telefone, mensagem, process.env.GROQ_API_KEY_2, systemPromptFinal);
-                        reply = garantirMencaoCursos(ragResultados, reply);
+                        const reply = await askGroq(telefone, mensagem, process.env.GROQ_API_KEY_2, systemPromptFinal);
                         conversas[telefone].push({ role: 'assistant', content: reply });
                         botStatus.modelo = 'groq_2';
                         console.log('✅ Usando Groq chave 2');
@@ -793,19 +820,12 @@ IMPORTANTE: Esses dados já foram coletados. NÃO peça nome, idade ou horário 
                 }
         }
 
-        // Tentativa 3 — Gemini (Fallback final)
+        // Tentativa 4 — Gemini (Fallback final)
         console.log('🔄 Acionando Gemini como fallback final...');
         botStatus.modelo = 'gemini';
         botStatus.fallbacksHoje++;
         try {
-                let reply = await askGemini(telefone, mensagem, systemPromptFinal);
-                reply = garantirMencaoCursos(ragResultados, reply);
-                // askGemini já empurrou a resposta original pro histórico — corrige aqui
-                // também, senão a IA "lembraria" de uma versão sem o curso completo.
-                if (conversas[telefone]?.length > 0) {
-                        conversas[telefone][conversas[telefone].length - 1].content = reply;
-                }
-                return reply;
+                return await askGemini(telefone, mensagem, systemPromptFinal);
         } catch (geminiErr) {
                 console.error('❌ Todos os modelos falharam.', geminiErr.message);
                 throw geminiErr;
@@ -3500,12 +3520,19 @@ async function enviarPesquisasLeadsPerdidos() {
         // é sempre priorizado — o resto simplesmente continua na fila pro dia seguinte.
         const LIMITE_DIARIO_PESQUISAS = 50;
 
+        // Decisão do Lucas (04/10/2026): a pesquisa só vale pra quem virou 'perdido' DEPOIS
+        // desse corte. Os ~1.900 que já estavam perdidos (muitos por causa do bug da
+        // classificação em massa) ficam de fora pra sempre, mesmo que algo volte a
+        // preencher perdido_em neles.
+        const INICIO_PESQUISAS_PERDIDOS = '2026-10-04T23:00:00.000Z';
+
         const { data: leads, error } = await supabase
                 .from('status_de_leads')
                 .select('telefone, nome, vendedor, perdido_em')
                 .eq('status', 'perdido')
                 .eq('feedback_perda_enviado', false)
                 .not('perdido_em', 'is', null)
+                .gte('perdido_em', INICIO_PESQUISAS_PERDIDOS)
                 .lte('perdido_em', limite24h)
                 .order('perdido_em', { ascending: true })
                 .limit(LIMITE_DIARIO_PESQUISAS);
