@@ -695,11 +695,17 @@ async function askAI(telefone, mensagem) {
 }
 
 async function askAIModelos(telefone, mensagem) {
-        try {
-                conversas[telefone] = await carregarHistoricoParaIA(telefone);
-        } catch (e) {
-                console.warn(`⚠️ Falha ao carregar histórico do banco pra ${telefone}, usando o da memória:`, e.message);
+        // O simulador do CRM não grava nada no banco — o histórico dele vive só na memória.
+        // Recarregar do banco apagaria a conversa simulada a cada mensagem.
+        if (telefone === 'simulador_crm') {
                 if (!conversas[telefone]) conversas[telefone] = [];
+        } else {
+                try {
+                        conversas[telefone] = await carregarHistoricoParaIA(telefone);
+                } catch (e) {
+                        console.warn(`⚠️ Falha ao carregar histórico do banco pra ${telefone}, usando o da memória:`, e.message);
+                        if (!conversas[telefone]) conversas[telefone] = [];
+                }
         }
         conversas[telefone].push({ role: 'user', content: mensagem });
         if (conversas[telefone].length > 30) conversas[telefone] = conversas[telefone].slice(-30);
