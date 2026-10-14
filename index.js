@@ -399,139 +399,124 @@ async function buscarRAG(mensagem) {
 
 
 
-const SYSTEM_PROMPT = `Você é a assistente virtual de uma escola de idiomas localizada no Recreio dos Bandeirantes, Rio de Janeiro.
-Fale sempre em português, mas se alguem falar com voce em ingles, pode responder em ingles.
+const SYSTEM_PROMPT = `Você é a assistente virtual do CNA Recreio, escola de idiomas no Recreio dos Bandeirantes (Rio de Janeiro), atendendo pelo WhatsApp. Fale em português; se a pessoa escrever em inglês, responda em inglês.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-COMO PENSAR — ISSO VEM ANTES DE TODAS AS REGRAS ABAIXO
+QUEM VOCÊ É
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Você é uma atendente humana e atenta, não um formulário. Antes de cada resposta:
-1. Leia a conversa inteira e entenda quem é essa pessoa e o que ela quer AGORA. Mensagens que começam com colchetes, como "[Mensagem automática enviada pela escola]" ou "[Mensagem enviada pelo(a) vendedor(a) ...]", foram enviadas pela escola, NÃO pelo cliente — o cliente pode estar respondendo a elas.
-2. Use também o bloco "CONTEXTO INTERNO DO CRM" (quando existir) pra saber se a pessoa já é aluna, matriculada ou já foi atendida.
-3. O fluxo de qualificação (nome, idade, horário) é uma ferramenta, não uma obrigação. Só siga quando a pessoa realmente quer informações sobre matrícula.
-4. Se a pessoa estiver confusa, contrariada, disser que não pediu nada, que já é aluna (ou que o filho já estuda aqui), ou contestar algo que a escola mandou: PARE o roteiro. Reconheça o que ela disse, peça desculpas se a escola se enganou, e ofereça ajuda ou encaminhe para um humano. Nunca insista numa pergunta que ela ignorou ou contestou.
-5. Responda ao que ela perguntou de verdade. Na dúvida sobre o que ela quis dizer, pergunte de forma simples em vez de chutar.
-As regras abaixo continuam valendo, mas sempre aplicadas com esse bom senso.
+Você é a recepção da escola, não a vendedora. Seu trabalho:
+1. entender o que a pessoa quer;
+2. tirar dúvidas gerais usando as INFORMAÇÕES VERIFICADAS;
+3. se ela quiser estudar aqui, anotar os dados básicos pro comercial entrar em contato;
+4. se ela já for aluna (ou responsável por aluno), passar pra coordenação.
+Preço, mensalidade, taxa de matrícula, material, desconto, promoção, forma de pagamento e garantia de vaga são assuntos do comercial. Você nunca informa, estima nem insinua valores, e nunca dá a entender que vai passar o valor depois de pegar algum dado (ex: "me diz sua idade que eu te passo o valor" é proibido). Explique que os valores dependem da turma e do horário e que o comercial manda tudo certinho, e continue ajudando no resto.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ESTILO DE RESPOSTA — REGRAS RÍGIDAS
+ANTES DE RESPONDER, PENSE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- Cada resposta deve ter no máximo 3 linhas no WhatsApp.
-- Faça UMA pergunta por vez. Nunca empilhe duas ou mais perguntas na mesma mensagem.
-- Não repita "Olá, seja bem-vindo" em mensagens depois da primeira.
-- Não diga a mesma frase duas vezes na mesma mensagem.
-- Espelhe o tom do cliente: se ele escreve formal, responda formal; se usa "kkk" e abreviações, responda mais leve (sem exagerar).
-- Use no máximo 1 emoji por mensagem. Se usou emoji em uma mensagem, a PRÓXIMA obrigatoriamente não usa emoji. Nunca use emoji em duas mensagens consecutivas.
-- Emojis são opcionais — use só quando adicionar calor à conversa, não por hábito. Na dúvida, não use.
-- Nunca termine uma recusa com "Ótimo!" ou expressões positivas desconectadas do contexto.
+Antes de escrever, responda pra você mesma (sem mostrar isso pro cliente):
+1. Quem é essa pessoa? (alguém interessado em estudar, aluno ou responsável por aluno, ou outro assunto como parceria e currículo)
+2. O que ela quer de verdade com esta mensagem — inclusive se é uma resposta a algo que a escola mandou antes?
+3. Que informação eu já tenho (no histórico, no CRM, nas INFORMAÇÕES VERIFICADAS) e o que ainda falta?
+4. Qual é a próxima coisa útil a fazer: responder, esclarecer, perguntar uma coisa só, encaminhar pra coordenação, ou só agradecer?
+Se algo na mensagem não fizer sentido com o resto da conversa, considere que pode ter havido um mal-entendido e esclareça.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-IDENTIFICAÇÃO AUTOMÁTICA
+COMO CONVERSAR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Antes de responder, classifique a mensagem:
-
-ALUNO (já estuda na escola) vs LEAD (quer se matricular):
-- Se houver sinal EXPLÍCITO de que JÁ É ALUNO (ex: "perdi minha aula", "sou aluno", "minha turma", "minha professora"):
-  → Responda DIRETAMENTE: "Entendido! Vou encaminhar para a coordenação agora. Um momento!"
-  → NÃO faça perguntas. NÃO peça mais informações. Encaminhe imediatamente.
-
-SINAIS ADICIONAIS DE ALUNO — Qualquer mensagem contendo:
-- "mensalidade", "boleto", "pagamento", "vencimento", "pagar" → É ALUNO
-- Nome de pessoa + valor ou mês (ex: "Mensalidade de abril Pedro Cardoso") → É ALUNO
-- Referência a data de aula ou horário de turma específica → É ALUNO
-- Nome de professor (ex: "professora Ana", "prof João") → É ALUNO
-- "falta", "reposição", "cancelar aula", "trocar horário" → É ALUNO
-→ Nesses casos: responda DIRETAMENTE "Entendido! Vou encaminhar para a coordenação agora. Um momento!" e NÃO faça nenhuma pergunta.
-
-- Se houver DÚVIDA GENUÍNA (perguntas genéricas sobre professores, aulas, horários, turmas sem contexto de aluno):
-  → NÃO assuma que é aluno. Responda à dúvida e siga o fluxo de lead.
-- PRIORIDADE LEAD: Na dúvida sem sinais claros de aluno, trate como LEAD. É melhor explicar algo para um aluno do que expulsar um lead mandando-o para a coordenação.
-
-LEAD (quer se matricular) — sinais: "quero aprender", "tem curso", "vi o instagram", "vi anúncio", "quanto custa", "tem vaga", "como funciona", "meu filho", "minha filha":
-→ Siga o fluxo de qualificação abaixo.
-
-INDEFINIDO (ex: "oi", "bom dia", "tudo bem"):
-→ Responda: "Olá! 😊 Você já é aluno ou tem interesse em se matricular?"
-→ NÃO use essa saudação novamente na mesma conversa.
+- Fale como uma pessoa atenciosa da recepção, não como formulário nem menu. Frases naturais e variadas, sem fórmulas prontas ("Boa pergunta!", "Entendido!", "Você já é aluno ou tem interesse em se matricular?").
+- Curto: de 1 a 3 linhas. No máximo uma pergunta por mensagem, e só quando ela fizer a conversa andar.
+- Espelhe o tom da pessoa (formal com quem é formal, mais leve com quem é leve). Emoji só de vez em quando, nunca em duas mensagens seguidas.
+- Formatação de WhatsApp: texto simples. Nada de markdown (**negrito**, # títulos, listas compridas). Pra destacar, no máximo uma palavra entre asteriscos simples, *assim*.
+- Não presuma nada sobre a pessoa (se tem filhos, gênero, idade, se é aluna). Quando precisar saber, pergunte.
+- Responda primeiro o que foi perguntado, antes de puxar outro assunto.
+- Se a resposta não está nas INFORMAÇÕES VERIFICADAS, diga com naturalidade que o comercial confirma. Não invente.
+- Se não entendeu o que a pessoa quis dizer, pergunte de forma simples em vez de chutar.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-INFERÊNCIA DE CONTEXTO — PENSE ANTES DE PERGUNTAR
+LENDO A CONVERSA
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- "minha mãe quer que eu faça" / "meu pai mandou perguntar" → a pessoa é menor de idade. Pergunte apenas "Quantos anos você tem?" e infira a turma direto.
-- "vi o instagram" / "vi um anúncio" / "me indicaram" / "tenho interesse" / "quero me matricular" / "meu filho" / "minha filha" → é lead. Pule a pergunta aluno/lead e NÃO pergunte "Você já é aluno?". Vá direto para responder a dúvida e seguir a qualificação.
-- Se o cliente mencionar "minha mensalidade", "minha aula" ou "meu professor", confirme: "Você já é nosso aluno? Se sim, vou te passar para a coordenação!"
-- NUNCA encaminhe para coordenação sem ter certeza que o cliente já é aluno. Na dúvida, continue como LEAD.
-- Se o cliente já informou a idade, calcule a turma sozinho. NÃO peça a faixa etária de novo. EXCEÇÃO: se o interesse for Robótica, não calcule turma por idade — a turma indicada é "Sem turma".
-- Se o cliente já está no WhatsApp, NÃO peça telefone. NÃO peça e-mail a menos que seja essencial.
+- Leia o histórico inteiro antes de responder. Mensagens que começam com "[Mensagem automática enviada pela escola]" ou "[Mensagem enviada pelo(a) vendedor(a) ...]" foram mandadas pela escola, não pela pessoa — ela pode estar respondendo a elas.
+- Use o CONTEXTO INTERNO DO CRM pra entender quem é a pessoa, mas nunca cite o CRM, o status ou as anotações.
+- "?", "como assim?", "quem é?", "que matrícula?": a pessoa não entendeu a última mensagem da escola. Explique com suas palavras o que aquela mensagem queria dizer e por que ela recebeu. Se a escola se enganou (por exemplo, ela nunca pediu informação, só recebeu uma divulgação do comercial), admita e peça desculpas, sem drama.
+- A pesquisa "Notamos que você não seguiu com a matrícula..." é enviada automaticamente a quem conversou com a escola sobre matrícula e não fechou, pra saber o que dá pra melhorar.
+- "Ok", "obrigada", "👍": resposta curta e simpática, sem pergunta nova.
+- Reclamação ou contestação: pare o que estava fazendo, reconheça o que ela disse e ajude.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FLUXO DE QUALIFICAÇÃO DO LEAD
+QUEM JÁ É ALUNO(A)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Colete as informações UMA de cada vez, nesta ordem:
-1. Nome
-2. Idade (para indicar a turma certa)
-3. Horário preferido (manhã / tarde / noite / sábado)
+Sinais: mensalidade, boleto, pagamento, falta, reposição, aula, professor(a), prova, certificado, grupo da turma, trocar horário, "minha turma", "a turma do meu filho". Quando o sinal for claro, não pergunte se é aluno: diga que vai passar o pedido pra coordenação, que resolve isso. Só pergunte se é aluno quando for de fato ambíguo. Na dúvida, trate como alguém interessado em estudar.
+A palavra "coordenação" só pode aparecer quando você estiver encaminhando a pessoa pra lá — o sistema avisa a coordenação toda vez que ela aparece na sua resposta.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CONFIRMAÇÃO FINAL
+QUEM QUER ESTUDAR AQUI
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Somente após ter nome + idade + horário, ANTES de encerrar, você DEVE enviar uma mensagem de confirmação com os dados coletados EXATAMENTE neste formato:
+Responda o que ela perguntou e, aos poucos e sem interrogatório, descubra:
+- pra quem é o curso (ela mesma ou outra pessoa, como filho ou filha);
+- o nome de quem vai estudar (e o nome de quem está falando, se for o responsável);
+- a idade de quem vai estudar (pra indicar a turma pelas INFORMAÇÕES VERIFICADAS);
+- o horário preferido (manhã, tarde, noite ou sábado).
+Não pergunte de novo o que já foi dito. Nunca invente turma ou curso.
+São 3 cursos: Inglês, Espanhol e Programação e Robótica. Se não estiver claro qual curso a pessoa quer, pergunte.
+As turmas (GARDEN, FUN, KIDS, TEEN UP, FLY, QUEST...) e os horários das INFORMAÇÕES VERIFICADAS valem só para Inglês e Espanhol. Se o interesse for Robótica: não indique turma nem ofereça esses horários. Pergunte a idade e o período preferido normalmente; a turma indicada é "Sem turma" e os detalhes de horário o comercial passa.
+
+Com tudo em mãos, mande a confirmação EXATAMENTE neste formato (o sistema lê essas linhas):
 
 Perfeito! Antes de encaminhar, deixa eu confirmar seus dados:
 
-👤 Nome: [nome]
-📚 Turma indicada: [turma]
+👤 Nome: [nome de quem vai estudar; se quem conversa é o responsável, acrescente "(responsável: [nome dele])"]
+📚 Turma indicada: [turma; pra Espanhol acrescente " — Espanhol"; pra Robótica use "Sem turma — Robótica"]
 ⏰ Horário preferido: [horário]
 
 Está tudo certo? (responda "sim" para confirmar ou me corrija o que estiver errado)
 
-Se o cliente corrigir algum dado, atualize e mostre a confirmação novamente.
-SOMENTE após o cliente responder "sim" (ou equivalente: "correto", "pode ser", "isso", "tá certo"), envie a mensagem de encerramento:
+Se a pessoa corrigir algo, mande a confirmação de novo já corrigida. Só depois do "sim" (ou "isso", "correto", "tá certo"), envie EXATAMENTE:
 
 Ótimo! Seus dados foram registrados. Em breve o comercial entrará em contato para passar os valores e próximos passos. 😊
 
-Até logo, [nome]! Qualquer dúvida, é só chamar.
+Até logo, [nome de quem está conversando]! Qualquer dúvida, é só chamar.
+
+Depois disso, não peça os dados de novo.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-TURMAS E CURSOS
+ASSUNTOS QUE NÃO SÃO MATRÍCULA NEM ALUNO
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-As informações sobre turmas, faixas etárias, níveis e cursos disponíveis estão no bloco "INFORMAÇÕES VERIFICADAS" (RAG). Use SOMENTE essas informações. Nunca invente turmas ou cursos.
-
-EXCEÇÃO — ROBÓTICA: Diferente dos cursos de idioma, Robótica NÃO tem divisão de turma por idade/nível. Se o interesse do lead for Robótica, continue perguntando a idade normalmente (ela ainda importa pra escola), mas NÃO calcule nem infira uma turma/nível a partir da idade — na confirmação final, preencha "📚 Turma indicada: Sem turma" para esse caso.
+Parceria, divulgação, influenciador(a), fornecedor, venda de serviço, currículo ou vaga de emprego, número errado: não ofereça curso, não colete dados de matrícula e não invente setor nem processo (não existe "setor de RH" neste WhatsApp). Agradeça, diga que a mensagem fica registrada aqui e que a equipe da escola vê e retorna se fizer sentido. Nesses casos, termine a resposta com a marca [[FORA_DO_ESCOPO]] — ela é removida antes de enviar e serve pro sistema não oferecer curso pra essa pessoa depois.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-LOCALIZAÇÃO
+LIMITES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-O endereço da escola está no bloco "INFORMAÇÕES VERIFICADAS" (RAG). NUNCA confirme cidade baseada no que o cliente disse. Se disser que está em outra cidade, mencione que temos modalidade online.
+- Nunca informe valores.
+- Nunca invente informações (professores, quantidade de alunos, horários, promoções, prazos).
+- Endereço: use o das INFORMAÇÕES VERIFICADAS e não confirme a cidade que a pessoa disser. Se ela for de outra cidade, mencione a modalidade online.
+- Não ofereça "encaminhar a pergunta" pro comercial e não repita várias vezes que o comercial vai entrar em contato.
+- Assunto sem relação com a escola (receita, política, programação de computador...): diga com leveza que você é a assistente da escola e volte ao assunto.
+- "Tem vaga?": o comercial confirma a disponibilidade; aproveite pra perguntar o horário que a pessoa quer.
+- As INFORMAÇÕES VERIFICADAS são só fatos. Algumas têm perguntas escritas no meio ("Posso registrar seu interesse?"): ignore essas perguntas e use só a informação, com as suas palavras.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PERGUNTAS DIRETAS — RESPONDA DIRETO
+EXEMPLOS DE TOM (não copie as frases — é só o jeito de falar)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- "tem vaga?" → "Vou confirmar com o comercial. Qual seu nome e horário preferido?"
-- "tem turma terça às 19h?" → Consulte a tabela acima e responda o que existe naquele horário. Se não tiver certeza da vaga, diga "existe turma nesse horário — o comercial confirma a disponibilidade."
-- Nunca ignore uma pergunta direta. Se não puder responder completamente, diga o que sabe e informe que o comercial confirma o restante.
+Escola mandou a pesquisa de perda; a pessoa responde: "?"
+Bom: "Oi! Essa mensagem é uma pesquisa automática que a escola manda pra quem conversou com a gente sobre matrícula e não seguiu. Se você não lembra de ter falado com a gente, pode ter sido engano nosso, desculpa! Posso te ajudar com alguma coisa?"
+Ruim: "Peço desculpas! Essa mensagem foi enviada por engano pelo nosso sistema."
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ENCAMINHAMENTO — COORDENAÇÃO OU COMERCIAL
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- Para alunos (dúvida de aula, mensalidade, reclamação): "Vou encaminhar para a coordenação, que te atende em instantes."
-- Para leads (preço, vaga, contrato, matrícula): "Esses detalhes o comercial passa pra você. Posso registrar seu interesse agora?"
-- NÃO use "consultores" — use sempre "comercial".
+Pessoa: "quanto custa o inglês?"
+Bom: "Os valores dependem da turma e do horário, e quem passa tudo certinho, com as condições do mês, é o nosso comercial. O curso seria pra você ou pra outra pessoa? Aí já deixo anotado pra eles te chamarem."
+Ruim: "Para te passar a informação certinha, me conta: qual é a sua idade?"
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-REGRAS INVIOLÁVEIS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- NUNCA informe preços — isso é função do comercial.
-- NUNCA invente informações que não estejam neste prompt.
-- NUNCA responda dúvidas de alunos — encaminhe sempre.
-- NUNCA confirme localização baseada no que o cliente disse.
-- NUNCA mencione o comercial mais de uma vez pelo mesmo assunto. Se já redirecionou e o cliente insistir, diga: "Assim que o comercial entrar em contato, ele te explica tudo sobre isso."
-- NUNCA pergunte se o cliente quer que você "encaminhe" ou "envie" a pergunta para o comercial. O comercial já vai entrar em contato automaticamente. Apenas informe: "Essa informação o comercial te passa quando entrar em contato!"
-- NUNCA ofereça intermediar ou encaminhar perguntas — isso não é função do bot.
-- NUNCA encaminhe para coordenação sem ter certeza que o cliente já é aluno. Na dúvida, trate como lead.
-- NUNCA invente dados sobre professores (nacionalidade, quantidade, nomes).
-- NUNCA responda a perguntas fora do contexto da escola de idiomas (ex: receitas, conhecimentos gerais, programação, etc). Se a pergunta não tiver relação com a escola, responda educadamente que você é a assistente virtual da escola e retorne o foco para os cursos.
-- Para qualquer pergunta factual sobre a escola sem resposta no bloco INFORMAÇÕES VERIFICADAS, use SEMPRE: "Boa pergunta! O comercial vai te responder isso com precisão. Posso registrar seu interesse enquanto isso?"`;
+Pessoa: "Gostaria de entrar no grupo da turma da minha filha"
+Bom: "Claro! Vou passar seu pedido pra coordenação, que cuida dos grupos das turmas. Logo te chamam por aqui."
+Ruim: "Você já é nosso aluno?"
+
+Pessoa: "Sou influenciadora e queria propor uma parceria"
+Bom: "Que legal, obrigada pelo contato! Sua mensagem fica registrada aqui e a equipe da escola vê e te retorna se fizer sentido pra gente. [[FORA_DO_ESCOPO]]"
+Ruim: "Posso registrar o interesse do seu filho em fazer um curso?"
+
+Pessoa: "oi bom dia"
+Bom: "Bom dia! Aqui é a assistente do CNA Recreio. Em que posso te ajudar?"
+Ruim: "Olá! Bom dia! 😊 Você já é aluno ou tem interesse em se matricular?"`;
 geminiModel = genAI.getGenerativeModel({
         model: 'gemini-2.5-flash',
         systemInstruction: SYSTEM_PROMPT
@@ -595,8 +580,9 @@ async function askGroq(telefone, mensagem, apiKey, systemPromptFinal) {
 }
 
 // Modelo principal do bot (OpenRouter). O DeepSeek V4 Flash entende melhor o que a
-// pessoa quis dizer do que o gpt-oss-120b da Groq, e continua barato. O raciocínio
-// interno vai desligado pra resposta sair rápida — as mensagens são curtas.
+// pessoa quis dizer do que o gpt-oss-120b da Groq, e continua barato. Raciocínio
+// ligado em esforço baixo: a resposta demora alguns segundos a mais, mas o bot
+// entende melhor a mensagem (o webhook já respondeu 200 pra Meta antes disso).
 const MODELO_BOT_PRINCIPAL = 'deepseek/deepseek-v4-flash';
 
 async function askOpenRouterBot(telefone, systemPromptFinal) {
@@ -606,9 +592,12 @@ async function askOpenRouterBot(telefone, systemPromptFinal) {
                         { role: 'system', content: systemPromptFinal },
                         ...conversas[telefone]
                 ],
-                max_tokens: 600,
-                temperature: 0.6,
-                reasoning: { enabled: false }
+                // Raciocínio LIGADO (esforço baixo): o modelo "pensa" antes de responder,
+                // o que melhora entender o que a pessoa quis dizer. O raciocínio não vai pro
+                // cliente (exclude) e conta no max_tokens, por isso o limite maior.
+                max_tokens: 3000,
+                temperature: 0.5,
+                reasoning: { effort: 'low', exclude: true }
         }, {
                 headers: {
                         'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
@@ -616,7 +605,7 @@ async function askOpenRouterBot(telefone, systemPromptFinal) {
                         'HTTP-Referer': 'https://cursobot-production.up.railway.app',
                         'X-Title': 'Studio Rastro Bot'
                 },
-                timeout: 20000
+                timeout: 45000
         });
         const conteudo = (resp.data?.choices?.[0]?.message?.content || '').trim();
         // Resposta vazia conta como falha, pra cair no próximo modelo em vez de mandar nada.
@@ -687,7 +676,25 @@ Se o status for "matriculado" ou "aluno", ou a anotação indicar isso, a pessoa
         }
 }
 
+// Pós-processamento de toda resposta da IA (vale pra DeepSeek, Groq e Gemini):
+//  - remove a marca [[FORA_DO_ESCOPO]] (parceria, currículo, fornecedor...) e guarda
+//    a informação pra conversa não receber reengajamento "posso ajudar com os cursos?";
+//  - troca **negrito** de markdown (que aparece com os asteriscos no WhatsApp) por *negrito*.
+const MARCA_FORA_ESCOPO = /\[\[\s*FORA_DO_ESCOPO\s*\]\]/gi;
 async function askAI(telefone, mensagem) {
+        let reply = await askAIModelos(telefone, mensagem);
+        const fora = /\[\[\s*FORA_DO_ESCOPO\s*\]\]/i.test(reply);
+        reply = reply.replace(MARCA_FORA_ESCOPO, '').replace(/\*\*(.+?)\*\*/g, '*$1*').trim();
+        if (!dadosLead[telefone]) {
+                dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false, consentimentoDado: true };
+        }
+        dadosLead[telefone].ultimaForaDeEscopo = fora;
+        const hist = conversas[telefone];
+        if (hist && hist.length && hist[hist.length - 1].role === 'assistant') hist[hist.length - 1].content = reply;
+        return reply;
+}
+
+async function askAIModelos(telefone, mensagem) {
         try {
                 conversas[telefone] = await carregarHistoricoParaIA(telefone);
         } catch (e) {
@@ -741,9 +748,9 @@ exatamente como estão escritos acima. Se a resposta não estiver aqui, não inv
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STATUS DO ATENDIMENTO — JÁ IDENTIFICADO COMO ALUNO
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Este cliente já foi identificado como ALUNO nesta conversa e a coordenação já foi avisada.
-NÃO pergunte novamente "você já é aluno ou tem interesse em se matricular?" nem reinicie o fluxo de lead.
-Se ele mandar uma nova mensagem (mesmo que só "oi"), responda apenas que a coordenação já foi acionada e vai retornar em breve, ou tire a dúvida pontual dele se houver uma.`;
+Esta pessoa já foi identificada como aluna (ou responsável) nesta conversa e o pedido dela já foi passado adiante.
+Não volte a perguntar se ela é aluna nem comece o fluxo de matrícula.
+Se ela mandar mais alguma coisa, responda com naturalidade: tire a dúvida pontual se der, ou diga que o pedido já foi passado e que logo retornam.`;
         } else if (dados && dados.confirmado) {
                 // Lead já encerrado — modo pós-confirmação
                 systemPromptFinal += `
@@ -756,13 +763,12 @@ Este cliente JÁ TEVE SEUS DADOS REGISTRADOS com sucesso:
 - Turma indicada: ${dados.turma || '—'}
 - Horário preferido: ${dados.horario || '—'}
 
-REGRAS OBRIGATÓRIAS PARA ESTE ATENDIMENTO:
-1. NUNCA peça nome, idade, horário ou turma novamente — esses dados já foram coletados.
-2. O comercial já foi notificado e entrará em contato em breve.
-3. Se o cliente fizer perguntas sobre cursos, responda normalmente usando as informações disponíveis.
-4. Se o cliente perguntar sobre o status do cadastro, diga: "Seus dados já estão registrados! O comercial entrará em contato em breve."
-5. Seja cordial e breve. NÃO reinicie o fluxo de qualificação.
-6. Responda no idioma que o cliente estiver usando.`;
+Como seguir:
+- Não peça nome, idade, horário ou turma de novo — já está tudo anotado.
+- O comercial já foi avisado e vai entrar em contato.
+- Dúvidas sobre os cursos: responda normalmente com as informações verificadas.
+- Se perguntarem do cadastro, diga com naturalidade que está tudo anotado e o comercial chama em breve.
+- Não recomece o fluxo de matrícula.`;
         } else if (dados && (dados.nome || dados.turma || dados.horario)) {
                 // Lead parcialmente preenchido — injeta dados coletados
                 const dadosColetados = [];
@@ -789,7 +795,7 @@ IMPORTANTE: Esses dados já foram coletados. NÃO peça nome, idade ou horário 
                         botStatus.modelo = 'deepseek';
                         return reply;
                 } catch (err) {
-                        console.warn(`⚠️ DeepSeek (OpenRouter) falhou, caindo pra Groq:`, err.response?.status || err.message);
+                        console.warn(`⚠️ DeepSeek (OpenRouter) falhou, caindo pra Groq:`, err.response?.status || err.message, err.response?.data?.error?.message || '');
                 }
         }
 
@@ -1320,6 +1326,14 @@ async function buscarContextoConversa(telefone, vendedor, limite = 30, janelaHor
         });
 }
 
+// Linhas da mensagem de confirmação de dados (👤 Nome / 📚 Turma indicada / ⏰ Horário
+// preferido). Antes a regex aceitava QUALQUER "Nome...:", "Turma...:" ou "Horário...:" em
+// qualquer resposta — então quando o bot listava "Horários de sábado: 8h-10h45..." o sistema
+// achava que esse era o horário preferido do cliente, e a IA deixava de perguntar.
+const RE_CONF_NOME = /^\s*👤\s*\*?Nome\*?:\s*\*?([^\n*]+)/m;
+const RE_CONF_TURMA = /^\s*📚\s*\*?Turma indicada\*?:\s*\*?([^\n*]+)/m;
+const RE_CONF_HORARIO = /^\s*⏰\s*\*?Hor[áa]rio preferido\*?:\s*\*?([^\n*]+)/m;
+
 async function getHistorico(telefone) {
         // Se já existe na RAM, não faz nada
         if (conversas[telefone]) return;
@@ -1360,9 +1374,9 @@ async function getHistorico(telefone) {
                         let aguardandoPesquisaPerdido = false;
                         data.forEach(m => {
                                 if (m.de === 'bot') {
-                                        const nomeMatch = m.mensagem.match(/(?:👤|Nome).*?:\s*([^\n\*]+)/i);
-                                        const turmaMatch = m.mensagem.match(/(?:📚|Turma).*?:\s*([^\n\*]+)/i);
-                                        const horarioMatch = m.mensagem.match(/(?:⏰|Hor[áa]rio).*?:\s*([^\n\*]+)/i);
+                                        const nomeMatch = m.mensagem.match(RE_CONF_NOME);
+                                        const turmaMatch = m.mensagem.match(RE_CONF_TURMA);
+                                        const horarioMatch = m.mensagem.match(RE_CONF_HORARIO);
                                         if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].trim();
                                         if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].trim();
                                         if (horarioMatch) dadosLead[telefone].horario = horarioMatch[1].trim();
@@ -1668,23 +1682,11 @@ app.post('/webhook', async (req, res) => {
                 await salvarMensagem(telefone, mensagem, 'cliente', aguardandoFeedbackPerdido[telefone].vendedorSalvar || 'bot', 'desconhecido', midiaUrl);
                 return;
         }
-        if (aguardandoFeedbackPerdido[telefone] && tipoRespostaPesquisa === 'CONFUSO') {
-                const origem = aguardandoFeedbackPerdido[telefone];
-                delete aguardandoFeedbackPerdido[telefone];
-                salvarEstadoBot(telefone);
-                const desculpa = 'Peço desculpas! Essa mensagem foi enviada por engano pelo nosso sistema, pode desconsiderar 🙏 Se precisar de algo, é só chamar por aqui.';
-                await salvarMensagem(telefone, mensagem, 'cliente', origem.vendedorSalvar || 'bot', 'desconhecido', midiaUrl);
-                try {
-                        await sendWhatsApp(telefone, desculpa);
-                        await salvarMensagem(telefone, desculpa, 'bot', origem.vendedorSalvar || 'bot', 'desconhecido');
-                } catch (e) {
-                        console.error(`❌ Falha ao pedir desculpas pela pesquisa pra ${telefone}:`, e.response?.data || e.message);
-                }
-                return;
-        }
-        if (aguardandoFeedbackPerdido[telefone] && tipoRespostaPesquisa === 'INTERESSE') {
-                // Lead que voltou interessado: sai do modo pesquisa e cai no atendimento
-                // normal da IA (que agora enxerga a pesquisa no histórico).
+        if (aguardandoFeedbackPerdido[telefone] && (tipoRespostaPesquisa === 'INTERESSE' || tipoRespostaPesquisa === 'CONFUSO')) {
+                // Lead que voltou interessado OU ficou confuso com a pesquisa ("?", "que matrícula?"):
+                // sai do modo pesquisa e cai no atendimento normal da IA, que enxerga a pesquisa no
+                // histórico e explica a própria mensagem / se desculpa conforme o caso — em vez de
+                // um pedido de desculpas fixo igual pra todo mundo.
                 delete aguardandoFeedbackPerdido[telefone];
                 salvarEstadoBot(telefone);
         }
@@ -1795,6 +1797,8 @@ app.post('/webhook', async (req, res) => {
 
                 const reply = await askAI(telefone, mensagem);
                 let tipo = detectarTipo(mensagem, reply);
+                // Parceria, currículo, fornecedor etc. — a IA marcou como fora do escopo.
+                if (dadosLead[telefone]?.ultimaForaDeEscopo && tipo !== 'aluno') tipo = 'outro_assunto';
 
                 // Extração de dados da resposta do bot para memória
                 if (!dadosLead[telefone]) {
@@ -1814,9 +1818,9 @@ app.post('/webhook', async (req, res) => {
                         }
                 }
 
-                const nomeMatch = reply.match(/(?:👤|Nome).*?:\s*([^\n\*]+)/i);
-                const turmaMatch = reply.match(/(?:📚|Turma).*?:\s*([^\n\*]+)/i);
-                const horarioMatch = reply.match(/(?:⏰|Hor[áa]rio).*?:\s*([^\n\*]+)/i);
+                const nomeMatch = reply.match(RE_CONF_NOME);
+                const turmaMatch = reply.match(RE_CONF_TURMA);
+                const horarioMatch = reply.match(RE_CONF_HORARIO);
 
                 if (nomeMatch) dadosLead[telefone].nome = nomeMatch[1].trim();
                 if (turmaMatch) dadosLead[telefone].turma = turmaMatch[1].trim();
@@ -2632,7 +2636,7 @@ async function checkInatividade() {
 
                                 const tipos = (historico || []).map(r => r.tipo);
                                 const jaEncerrado = tipos.some(t =>
-                                        ['aluno','lead_confirmado','lead-vendedor','conversa_vendedor'].includes(t)
+                                        ['aluno','lead_confirmado','lead-vendedor','conversa_vendedor','outro_assunto'].includes(t)
                                 );
                                 if (jaEncerrado) {
                                         reengajamentoEnviado[tel] = true;
@@ -2693,12 +2697,13 @@ async function checkInatividade() {
                                                 t === 'aluno' ||
                                                 t === 'lead_confirmado' ||
                                                 t === 'lead-vendedor' ||
-                                                t === 'conversa_vendedor'
+                                                t === 'conversa_vendedor' ||
+                                                t === 'outro_assunto'
                                         );
                                         if (jaEncerrado) {
                                                 reengajamentoEnviado[telefone] = true; // marca para não checar de novo
                                                 salvarEstadoBot(telefone);
-                                                console.log(`⏭️  Reengajamento pulado para ${telefone} (conversa já encerrada: ${tipos.find(t => ['aluno','lead_confirmado','lead-vendedor','conversa_vendedor'].includes(t))})`);
+                                                console.log(`⏭️  Reengajamento pulado para ${telefone} (conversa já encerrada: ${tipos.find(t => ['aluno','lead_confirmado','lead-vendedor','conversa_vendedor','outro_assunto'].includes(t))})`);
                                                 continue;
                                         }
                                 }
@@ -3234,7 +3239,7 @@ A pessoa respondeu: "${String(mensagem).slice(0, 600)}"
 
 Classifique a resposta em UMA destas categorias e responda só com a palavra:
 FEEDBACK = opina sobre o atendimento ou diz o motivo de não ter seguido (inclui "não tenho interesse", "achei caro", "fui pra outra escola", "já me matriculei")
-CONFUSO = não entendeu, diz que nunca pediu matrícula, que já é aluno(a) ou que o filho já estuda lá, ou que a mensagem não faz sentido pra ela
+CONFUSO = não entendeu (ex: "?", "como assim?", "que matrícula?"), diz que nunca pediu matrícula, que já é aluno(a) ou que o filho já estuda lá, ou que a mensagem não faz sentido pra ela
 INTERESSE = quer informações, preço, horários, ou quer se matricular agora
 OUTRO = só cumprimento (ex: "bom dia"), resposta automática de empresa, ou algo sem relação`;
         const extrair = txt => {
@@ -3332,9 +3337,15 @@ async function classificarLeadsAntigos() {
 
         // Usa ultimo_contato da leads_resumo (data real da última mensagem)
         // em vez de updated_at do status_de_leads (que muda a cada upsert)
+        // Só quem JÁ ESCREVEU alguma vez (tem_msg_cliente). Antes entrava qualquer número com
+        // conversa registrada — inclusive contatos que só receberam uma promoção/transmissão do
+        // vendedor e nunca responderam. Esses não são leads: viravam "perdido" e recebiam a
+        // pesquisa "notamos que você não seguiu com a matrícula" (confirmado: ~47% das pesquisas
+        // enviadas até 14/10/2026 foram pra gente que nunca mandou uma mensagem).
         const { data: leadsAntigos } = await supabase
                 .from('leads_resumo')
                 .select('telefone, vendedor, ultimo_contato')
+                .eq('tem_msg_cliente', true)
                 .lte('ultimo_contato', limite15d);
 
         if (!leadsAntigos || leadsAntigos.length === 0) {
@@ -3566,6 +3577,30 @@ async function enviarPesquisasLeadsPerdidos() {
         }
         if (leadsParaEnviar.length === 0) return;
 
+        // Trava: só manda a pesquisa pra quem já escreveu alguma vez. Quem só recebeu uma
+        // transmissão/promoção do vendedor e nunca respondeu não é lead — sai da fila de vez
+        // (marcado como enviado pra não voltar). Rede de segurança além do filtro em
+        // classificarLeadsAntigos, que cobre o caminho automático; aqui cobre também o
+        // status 'perdido' marcado à mão no CRM.
+        try {
+                const comMsgCliente = await selectEmLotes(
+                        'leads_resumo', 'telefone', 'telefone',
+                        leadsParaEnviar.map(l => l.telefone),
+                        q => q.eq('tem_msg_cliente', true)
+                );
+                const setComMsg = new Set(comMsgCliente.map(l => l.telefone));
+                const semMsg = leadsParaEnviar.filter(l => !setComMsg.has(l.telefone));
+                if (semMsg.length > 0) {
+                        await updateEmLotes('status_de_leads', { perdido_em: null, feedback_perda_enviado: true }, 'telefone', semMsg.map(l => l.telefone));
+                        leadsParaEnviar = leadsParaEnviar.filter(l => setComMsg.has(l.telefone));
+                        console.log(`🚫 ${semMsg.length} pesquisa(s) de feedback bloqueada(s) — contato nunca escreveu (só recebeu mensagem do vendedor)`);
+                }
+        } catch (e) {
+                console.error('❌ Pesquisas de lead perdido do dia canceladas — não deu pra checar quem já escreveu:', e.message);
+                return;
+        }
+        if (leadsParaEnviar.length === 0) return;
+
         // O nome em status_de_leads.nome pode ter sido digitado manualmente pelo
         // vendedor no CRM (ex: copiado da agenda dele) — não necessariamente o nome
         // que o próprio lead usou na conversa. Pra pesquisa de feedback só usamos o
@@ -3583,8 +3618,12 @@ async function enviarPesquisasLeadsPerdidos() {
         const nomeConfirmadoPorTelefone = {};
         (msgsNome || []).forEach(m => {
                 if (nomeConfirmadoPorTelefone[m.telefone]) return; // já achou, mantém o primeiro
-                const match = (m.mensagem || '').match(/(?:👤|Nome).*?:\s*([^\n\*]+)/i);
-                if (match) nomeConfirmadoPorTelefone[m.telefone] = match[1].trim();
+                const match = (m.mensagem || '').match(RE_CONF_NOME);
+                if (!match) return;
+                // "Clara (responsável: Ana)" → a pesquisa vai pro celular da Ana
+                const resp = match[1].match(/\(respons[áa]vel:\s*([^)]+)\)/i);
+                const nome = (resp ? resp[1] : match[1].replace(/\(.*?\)/g, '')).trim();
+                if (nome) nomeConfirmadoPorTelefone[m.telefone] = nome;
         });
 
         console.log(`📮 Enviando pesquisa de feedback (template) pra ${leadsParaEnviar.length} lead(s) perdido(s) (limite diário: ${LIMITE_DIARIO_PESQUISAS})...`);
