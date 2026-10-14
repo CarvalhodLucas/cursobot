@@ -2096,13 +2096,59 @@ app.post('/simulate', async (req, res) => {
                 conversas[telefone] = [];
                 // Também limpa os dados provisórios do simulador, se houver
                 if (dadosLead[telefone]) delete dadosLead[telefone];
+                delete aguardandoFeedbackPerdido[telefone];
                 return res.json({ reply: '🔄 Memória do simulador reiniciada!', tipo: 'sistema', modelo: botStatus.modelo });
         }
 
         // Se não tiver histórico (ou foi recém limpo), inicializa
         if (!conversas[telefone]) conversas[telefone] = [];
 
+        // Comando de teste: simula a escola mandando a pesquisa de lead perdido pro
+        // número simulado, igual acontece de verdade em enviarPesquisasLeadsPerdidos().
+        // Serve pra testar, sem tocar em nenhum contato real, se uma mensagem que
+        // mistura resposta de pesquisa com assunto de lead novo é separada certinho.
+        if (mensagem.trim().toLowerCase() === '/pesquisa') {
+                const textoPesquisa = 'Oi, tudo bem! Aqui é do CNA Recreio 😊 Notamos que você não seguiu com a matrícula. Pode nos contar rapidinho o que achou do nosso atendimento e o motivo? Isso nos ajuda muito a melhorar 🙏';
+                conversas[telefone].push({ role: 'assistant', content: `[Mensagem automática enviada pela escola] ${textoPesquisa}` });
+                aguardandoFeedbackPerdido[telefone] = { vendedorSalvar: 'bot' };
+                return res.json({ reply: `📮 (simulação) Escola enviou: "${textoPesquisa}"`, tipo: 'sistema', modelo: botStatus.modelo });
+        }
+
         try {
+                // Reproduz, só pra este número simulado, a mesma triagem que o webhook real
+                // faz antes de chamar a IA quando o número está esperando resposta da pesquisa
+                // de lead perdido (ver comentário acima de aguardandoFeedbackPerdido no webhook).
+                if (aguardandoFeedbackPerdido[telefone]) {
+                        const tipoResposta = await classificarRespostaPesquisa(mensagem);
+                        conversas[telefone].push({ role: 'user', content: mensagem });
+
+                        if (tipoResposta === 'OUTRO') {
+                                // Cumprimento solto: fica esperando a resposta de verdade, sem falar nada.
+                                return res.json({ reply: '(sem resposta — bot continua esperando o feedback de verdade)', tipo: 'pesquisa_outro', modelo: botStatus.modelo });
+                        }
+
+                        if (tipoResposta === 'INTERESSE' || tipoResposta === 'CONFUSO') {
+                                // Sai do modo pesquisa e cai no atendimento normal — a IA vê a pesquisa
+                                // no histórico e decide como reagir.
+                                delete aguardandoFeedbackPerdido[telefone];
+                                const reply = await askAI(telefone, mensagem);
+                                const tipo = tipoDaConversa(telefone, mensagem, reply);
+                                return res.json({ reply, tipo, modelo: botStatus.modelo, pesquisaClassificada: tipoResposta });
+                        }
+
+                        // FEEDBACK: agradece e encerra, igual à produção — NÃO continua pro
+                        // atendimento normal. Se a mensagem também pedia outra coisa (ex: "achei
+                        // caro mas quero saber dos valores de novo"), esse pedido fica sem resposta
+                        // nesta troca — é exatamente o ponto cego que este comando serve pra mostrar.
+                        delete aguardandoFeedbackPerdido[telefone];
+                        const jaMatriculado = await respostaIndicaMatricula(mensagem);
+                        const reply = jaMatriculado
+                                ? 'Opa, sentimos muito pelo equívoco! 🙏 Pelo visto sua matrícula já foi feita e nosso sistema não estava refletindo isso corretamente. Peço desculpas pelo transtorno!'
+                                : 'Muito obrigado pelo retorno! Isso nos ajuda bastante a melhorar 🙏';
+                        conversas[telefone].push({ role: 'assistant', content: reply });
+                        return res.json({ reply, tipo: 'feedback_perdido', modelo: botStatus.modelo, pesquisaClassificada: 'FEEDBACK', matriculaDetectada: jaMatriculado });
+                }
+
                 const reply = await askAI(telefone, mensagem);
                 const tipo = tipoDaConversa(telefone, mensagem, reply);
                 // REMOVIDO: delete conversas[telefone]; // Mantém a memória
