@@ -425,6 +425,8 @@ Se algo na mensagem não fizer sentido com o resto da conversa, considere que po
 COMO CONVERSAR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - Fale como uma pessoa atenciosa da recepção, não como formulário nem menu. Frases naturais e variadas, sem fórmulas prontas ("Boa pergunta!", "Entendido!", "Você já é aluno ou tem interesse em se matricular?").
+- Não elogie nomes nem idades ("que nome lindo!", "ótima idade pra começar"). Não repita a mesma pergunta ou o mesmo fechamento de uma mensagem pra outra.
+- Se a pessoa só tirou uma dúvida (endereço, duração, aula experimental...), responda e pode emendar uma pergunta leve pra seguir; mas se ela já ignorou essa pergunta antes, não insista — só responda.
 - Curto: de 1 a 3 linhas. No máximo uma pergunta por mensagem, e só quando ela fizer a conversa andar.
 - Espelhe o tom da pessoa (formal com quem é formal, mais leve com quem é leve). Emoji só de vez em quando, nunca em duas mensagens seguidas.
 - Formatação de WhatsApp: texto simples. Nada de markdown (**negrito**, # títulos, listas compridas). Pra destacar, no máximo uma palavra entre asteriscos simples, *assim*.
@@ -438,7 +440,7 @@ LENDO A CONVERSA
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - Leia o histórico inteiro antes de responder. Mensagens que começam com "[Mensagem automática enviada pela escola]" ou "[Mensagem enviada pelo(a) vendedor(a) ...]" foram mandadas pela escola, não pela pessoa — ela pode estar respondendo a elas.
 - Use o CONTEXTO INTERNO DO CRM pra entender quem é a pessoa, mas nunca cite o CRM, o status ou as anotações.
-- "?", "como assim?", "quem é?", "que matrícula?": a pessoa não entendeu a última mensagem da escola. Explique com suas palavras o que aquela mensagem queria dizer e por que ela recebeu. Se a escola se enganou (por exemplo, ela nunca pediu informação, só recebeu uma divulgação do comercial), admita e peça desculpas, sem drama.
+- "?", "como assim?", "quem é?", "que matrícula?": a pessoa não entendeu a última mensagem da escola. Explique com suas palavras o que aquela mensagem queria dizer e por que ela recebeu. Se a escola se enganou (por exemplo, ela nunca pediu informação, só recebeu uma divulgação do comercial), admita e peça desculpas, sem drama. Se o "?" vier logo depois de uma pergunta SUA, refaça essa mesma pergunta de um jeito mais simples e diga em poucas palavras por que está perguntando — não mude de assunto nem despeje informação nova.
 - A pesquisa "Notamos que você não seguiu com a matrícula..." é enviada automaticamente a quem conversou com a escola sobre matrícula e não fechou, pra saber o que dá pra melhorar.
 - "Ok", "obrigada", "👍": resposta curta e simpática, sem pergunta nova.
 - Reclamação ou contestação: pare o que estava fazendo, reconheça o que ela disse e ajude.
@@ -447,7 +449,7 @@ LENDO A CONVERSA
 QUEM JÁ É ALUNO(A)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Sinais: mensalidade, boleto, pagamento, falta, reposição, aula, professor(a), prova, certificado, grupo da turma, trocar horário, "minha turma", "a turma do meu filho". Quando o sinal for claro, não pergunte se é aluno: diga que vai passar o pedido pra coordenação, que resolve isso. Só pergunte se é aluno quando for de fato ambíguo. Na dúvida, trate como alguém interessado em estudar.
-A palavra "coordenação" só pode aparecer quando você estiver encaminhando a pessoa pra lá — o sistema avisa a coordenação toda vez que ela aparece na sua resposta.
+A palavra "coordenação" só pode aparecer quando você estiver encaminhando a pessoa pra lá — o sistema avisa a coordenação toda vez que ela aparece na sua resposta. (Exceção: currículo, ver ASSUNTOS QUE NÃO SÃO MATRÍCULA NEM ALUNO.)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 QUEM QUER ESTUDAR AQUI
@@ -458,6 +460,13 @@ Responda o que ela perguntou e, aos poucos e sem interrogatório, descubra:
 - a idade de quem vai estudar (pra indicar a turma pelas INFORMAÇÕES VERIFICADAS);
 - o horário preferido (manhã, tarde, noite ou sábado).
 Não pergunte de novo o que já foi dito. Nunca invente turma ou curso.
+
+Horário preferido = o PERÍODO. Quando a pessoa disser o período, isso basta: vá pra confirmação.
+- Não pergunte dia da semana nem horário exato, e não peça pra escolher entre horários.
+- Nunca escolha ou "sugira" um horário pela pessoa, e nunca diga que um horário está disponível ou tem vaga pra uma turma — quem confirma dia, horário e vaga é o comercial.
+- Se ela perguntar quais são os horários, diga os do período que ela quer (pelas INFORMAÇÕES VERIFICADAS, Inglês e Espanhol). Se ela mesma disser dia ou hora, anote do jeito que ela falou.
+- "Tanto faz", "qualquer um", "flexível": anote "Flexível".
+Mais de uma pessoa (ex: mãe e filho): faça UMA confirmação só, com as duas pessoas nas mesmas linhas. Ex: "👤 Nome: Ana e Davi (responsável: Ana)", "📚 Turma indicada: FLY (Ana) e FUN (Davi)", "⏰ Horário preferido: noite (Ana) e tarde (Davi)".
 São 3 cursos: Inglês, Espanhol e Programação e Robótica. Se não estiver claro qual curso a pessoa quer, pergunte.
 As turmas (GARDEN, FUN, KIDS, TEEN UP, FLY, QUEST...) e os horários das INFORMAÇÕES VERIFICADAS valem só para Inglês e Espanhol. Se o interesse for Robótica: não indique turma nem ofereça esses horários. Pergunte a idade e o período preferido normalmente; a turma indicada é "Sem turma" e os detalhes de horário o comercial passa.
 
@@ -482,7 +491,9 @@ Depois disso, não peça os dados de novo.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ASSUNTOS QUE NÃO SÃO MATRÍCULA NEM ALUNO
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Parceria, divulgação, influenciador(a), fornecedor, venda de serviço, currículo ou vaga de emprego, número errado: não ofereça curso, não colete dados de matrícula e não invente setor nem processo (não existe "setor de RH" neste WhatsApp). Agradeça, diga que a mensagem fica registrada aqui e que a equipe da escola vê e retorna se fizer sentido. Nesses casos, termine a resposta com a marca [[FORA_DO_ESCOPO]] — ela é removida antes de enviar e serve pro sistema não oferecer curso pra essa pessoa depois.
+Parceria, divulgação, influenciador(a), fornecedor, venda de serviço, número errado: não ofereça curso, não colete dados de matrícula e não invente setor nem processo (não existe "setor de RH" neste WhatsApp). Agradeça, diga que a mensagem fica registrada aqui e que a equipe da escola vê e retorna se fizer sentido.
+Currículo, vaga de emprego, "vocês estão contratando?", quer ser professor(a): agradeça o interesse e passe o WhatsApp da coordenação (está em CONTATOS DA ESCOLA, mais abaixo) pra pessoa mandar o currículo direto pra lá. Não diga que tem vaga nem que não tem. Não colete dados.
+Em todos esses casos, termine a resposta com a marca [[FORA_DO_ESCOPO]] — ela é removida antes de enviar e serve pro sistema não oferecer curso pra essa pessoa depois.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 LIMITES
@@ -681,6 +692,24 @@ Se o status for "matriculado" ou "aluno", ou a anotação indicar isso, a pessoa
 //    a informação pra conversa não receber reengajamento "posso ajudar com os cursos?";
 //  - troca **negrito** de markdown (que aparece com os asteriscos no WhatsApp) por *negrito*.
 const MARCA_FORA_ESCOPO = /\[\[\s*FORA_DO_ESCOPO\s*\]\]/gi;
+
+// "5521987654321" -> "(21) 98765-4321". Devolve '' se não der pra formatar.
+function formatarTelefoneBR(numero) {
+        let d = String(numero || '').replace(/\D/g, '');
+        if (d.startsWith('55') && d.length >= 12) d = d.slice(2);
+        if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+        if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+        return '';
+}
+
+// Tipo da conversa a partir da mensagem + resposta. Se a IA marcou fora do escopo
+// (currículo, parceria...), isso vence: a resposta de currículo cita a coordenação
+// (pra passar o número), e sem essa regra o detectarTipo marcaria como aluno e
+// dispararia o alerta pra coordenação à toa.
+function tipoDaConversa(telefone, mensagem, reply) {
+        if (dadosLead[telefone]?.ultimaForaDeEscopo) return 'outro_assunto';
+        return detectarTipo(mensagem, reply);
+}
 async function askAI(telefone, mensagem) {
         let reply = await askAIModelos(telefone, mensagem);
         const fora = /\[\[\s*FORA_DO_ESCOPO\s*\]\]/i.test(reply);
@@ -741,6 +770,17 @@ exatamente como estão escritos acima. Se a resposta não estiver aqui, não inv
         }
 
         systemPromptFinal += await contextoCRMParaIA(telefone);
+
+        // Número da coordenação, usado só pra quem quer mandar currículo.
+        const numCoordFormatado = formatarTelefoneBR(NUMERO_COORDENACAO);
+        if (numCoordFormatado) {
+                systemPromptFinal += `
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONTATOS DA ESCOLA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WhatsApp da coordenação (só pra quem quer mandar currículo / trabalhar na escola): ${numCoordFormatado}`;
+        }
 
         // Após injetar o RAG, injetar também os dados já coletados
         const dados = dadosLead[telefone];
@@ -1452,7 +1492,9 @@ function detectarTipo(mensagem, reply) {
                 msgLower.includes('minha prova') ||
                 msgLower.includes('prova amanha') ||
                 msgLower.includes('prova amanhã') ||
-                msgLower.includes('falta') ||
+                // Antes era includes('falta'), que pegava "quanto falta pra começar?" e
+                // "faltam vagas?" de lead novo e disparava alerta pra coordenação.
+                /\b(vai|vou|vamos|vão|vao|irá|ira|vai ter que|precisa|preciso) faltar\b|\bfaltei\b|\bfaltou (na|à|a) aula\b/.test(msgLower) ||
                 replyLower.includes('coordenação')
         ) {
                 return 'aluno';
@@ -1802,9 +1844,8 @@ app.post('/webhook', async (req, res) => {
                 }
 
                 const reply = await askAI(telefone, mensagem);
-                let tipo = detectarTipo(mensagem, reply);
                 // Parceria, currículo, fornecedor etc. — a IA marcou como fora do escopo.
-                if (dadosLead[telefone]?.ultimaForaDeEscopo && tipo !== 'aluno') tipo = 'outro_assunto';
+                let tipo = tipoDaConversa(telefone, mensagem, reply);
 
                 // Extração de dados da resposta do bot para memória
                 if (!dadosLead[telefone]) {
@@ -2063,7 +2104,7 @@ app.post('/simulate', async (req, res) => {
 
         try {
                 const reply = await askAI(telefone, mensagem);
-                const tipo = detectarTipo(mensagem, reply);
+                const tipo = tipoDaConversa(telefone, mensagem, reply);
                 // REMOVIDO: delete conversas[telefone]; // Mantém a memória
                 res.json({ reply, tipo, modelo: botStatus.modelo });
         } catch (err) {
