@@ -1308,7 +1308,10 @@ async function baixarESubirMidia(mediaId, telefone, extensaoPadrao) {
                 const { data: publicUrlData } = supabase.storage.from('midias').getPublicUrl(caminho);
                 return publicUrlData?.publicUrl || null;
         } catch (err) {
-                console.error(`❌ Erro ao baixar/subir midia [${telefone}]: ${err.message}`);
+                // Mostra também a resposta da Meta (o "400" sozinho não diz se foi o token,
+                // o media_id expirado ou o número sem permissão) e em qual etapa falhou.
+                const detalheMeta = err.response?.data ? JSON.stringify(err.response.data).slice(0, 300) : '';
+                console.error(`❌ Erro ao baixar/subir midia [${telefone}] (media_id ${mediaId}, url ${err.config?.url?.slice(0, 60) || '?'}): ${err.message} ${detalheMeta}`);
                 return null;
         }
 }
@@ -3366,23 +3369,44 @@ OUTRO = só cumprimento (ex: "bom dia"), resposta automática de empresa, ou alg
 async function respostaIndicaMatricula(mensagem) {
         const systemPrompt = 'Você analisa a resposta de um ex-lead de uma escola de idiomas à pergunta "por que você não seguiu com a matrícula?". Responda APENAS "sim" se a resposta der a entender que a pessoa JÁ SE MATRICULOU ou já é aluna (ex: "já fiz minha matrícula", "já estou estudando aí", "achei que tinha concluído o cadastro", "sou aluno há X meses", "já pago mensalidade"). Responda APENAS "nao" em qualquer outro caso (dúvida sem confirmar matrícula, reclamação, feedback negativo, desistência, falta de interesse, preço, etc).';
 
+        // O gpt-oss-120b é um modelo de raciocínio: com max_tokens: 5 ele gastava tudo
+        // "pensando" e devolvia texto vazio, então "já me matriculei" nunca era detectado
+        // e a pessoa recebia o agradecimento padrão em vez do pedido de desculpas.
+        const lerSimNao = txt => {
+                const m = String(txt || '').toLowerCase().match(/\b(sim|n[aã]o)\b/);
+                return m ? m[1] === 'sim' : null;
+        };
+        for (const key of [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_2].filter(Boolean)) {
+                try {
+                        const resp = await axios.post(
+                                'https://api.groq.com/openai/v1/chat/completions',
+                                {
+                                        model: 'openai/gpt-oss-120b',
+                                        messages: [
+                                                { role: 'system', content: systemPrompt },
+                                                { role: 'user', content: mensagem || '' }
+                                        ],
+                                        max_tokens: 400,
+                                        reasoning_effort: 'low',
+                                        temperature: 0
+                                },
+                                { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+                        );
+                        const r = lerSimNao(resp.data?.choices?.[0]?.message?.content);
+                        if (r !== null) return r;
+                } catch (err) {
+                        console.warn('⚠️ Groq falhou ao checar matrícula na resposta de feedback:', err.response?.status || err.message);
+                }
+        }
+
         try {
-                const resp = await axios.post(
-                        'https://api.groq.com/openai/v1/chat/completions',
-                        {
-                                model: 'openai/gpt-oss-120b',
-                                messages: [
-                                        { role: 'system', content: systemPrompt },
-                                        { role: 'user', content: mensagem || '' }
-                                ],
-                                max_tokens: 5,
-                                temperature: 0
-                        },
-                        { headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' }, timeout: 8000 }
-                );
-                return (resp.data.choices[0].message.content || '').trim().toLowerCase().includes('sim');
+                const r = lerSimNao(await chamarOpenRouter([
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: mensagem || '' }
+                ], 400));
+                if (r !== null) return r;
         } catch (err) {
-                console.warn('⚠️ Groq falhou ao checar matrícula na resposta de feedback, tentando Gemini...', err.message);
+                console.warn('⚠️ OpenRouter falhou ao checar matrícula na resposta de feedback, tentando Gemini...', err.message);
         }
 
         try {
