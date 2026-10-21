@@ -645,6 +645,8 @@ async function carregarHistoricoParaIA(telefone, limite = 30) {
         if (error) throw error;
         return (data || []).reverse()
                 .filter(m => m.mensagem && String(m.mensagem).trim())
+                // Marcador interno ("Lead encaminhado para X") — não foi enviado ao cliente
+                .filter(m => m.tipo !== 'lead_encaminhado')
                 .map(m => {
                         if (m.de === 'cliente') return { role: 'user', content: m.mensagem };
                         if (m.de === 'bot') return { role: 'assistant', content: m.mensagem };
@@ -680,6 +682,7 @@ async function contextoCRMParaIA(telefone) {
 CONTEXTO INTERNO DO CRM — USE PARA ENTENDER A PESSOA, NUNCA CITE ISSO PRO CLIENTE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${linhas.join('\n')}
+Se tiver "Vendedor(a) responsável" e a pessoa estiver no meio do cadastro, siga normalmente: o comercial já sabe dela, e se ela completar os dados a confirmação vai pro mesmo vendedor.
 Se o status for "matriculado" ou "aluno", ou a anotação indicar isso, a pessoa NÃO é um lead novo: não faça o fluxo de qualificação, ajude no que ela pedir ou encaminhe pra coordenação. Se o status for "perdido" e ela voltou a falar, trate com naturalidade como alguém retomando o contato.`;
         } catch (e) {
                 console.warn('⚠️ Não deu pra buscar contexto do CRM pra IA:', e.message);
@@ -1883,7 +1886,11 @@ app.post('/webhook', async (req, res) => {
                         // atribuído lá no primeiro "oi" do cliente — que pode ter sido horas ou
                         // até um dia antes. Assim quem recebe o lead é sempre quem está na escala
                         // (ou é a vez do rodízio) no horário real em que o lead foi confirmado.
-                        vendedor = await getVendedor();
+                        // Exceção: se o lead já tinha sido encaminhado por inatividade e voltou
+                        // pra terminar o cadastro, os dados completos vão pro MESMO vendedor
+                        // (ele já está com o lead) em vez de sortear outro da fila.
+                        const vendedorJaEncaminhado = await vendedorDoEncaminhamento(telefone);
+                        vendedor = vendedorJaEncaminhado || await getVendedor();
                         vendedorPorTelefone[telefone] = vendedor;
 
                         salvarEstadoBot(telefone);
@@ -2683,146 +2690,226 @@ function salvarEstadoBot(telefone) {
 }
 // ────────────────────────────────────────────────────────────────────────────
 
-// Reengajamento após 23h de inatividade (dentro da janela de 24h — sem template)
-async function checkInatividade() {
-        const agora = Date.now();
+// ── Lead que parou de responder o bot → vai pro vendedor da fila ───────────────
+// Substitui o antigo reengajamento ("Oi! Ainda posso te ajudar...?"), que foi
+// desligado a pedido do Lucas (out/2026). Agora, se a pessoa escreveu pro bot e
+// ficou 24h sem responder sem ter concluído o cadastro, o lead vai pro vendedor
+// da vez (mesma escala/fila de getVendedor) com o que o bot conseguiu coletar —
+// o que faltar vai como "—". O vendedor fala com o lead pelo número dele, então a
+// janela de 24h do bot não importa aqui.
+//
+// Fica de fora quem:
+//  - já está resolvido: aluno, lead confirmado, conversa direta com vendedor,
+//    outro assunto (currículo, parceria...);
+//  - já foi encaminhado e não voltou a falar depois disso;
+//  - está no fluxo da pesquisa de lead perdido (últimos 7 dias);
+//  - já tem status de quem está sendo atendido ou não é lead (em andamento,
+//    pausado, aluno, matriculado, engano, colega, parceiro). "perdido" que volta
+//    a escrever ENTRA — é alguém retomando o contato;
+//  - números internos (gerente, Lucas, vendedores, coordenação) e o simulador.
+const TIPO_LEAD_ENCAMINHADO = 'lead_encaminhado';
+const INATIVIDADE_ENCAMINHAR_MS = 24 * 60 * 60 * 1000;
+const JANELA_BUSCA_INATIVOS_MS = 7 * 24 * 60 * 60 * 1000;
+const TIPOS_JA_RESOLVIDOS = ['aluno', 'lead_confirmado', 'lead-vendedor', 'conversa_vendedor', 'outro_assunto'];
+const TIPOS_PESQUISA_PERDIDO = ['pesquisa_perdido', 'feedback_perdido'];
+const STATUS_SEM_ENCAMINHAR = ['em_andamento', 'pausado', 'aluno', 'matriculado', 'engano', 'colega', 'parceiro'];
 
-        // ── Fallback DB: busca direto em conversas — nao depende de estado_bot ──
+function numeroDoVendedor(nome) {
+        return {
+                rebecca: process.env.NUMERO_REBECCA,
+                taynara: process.env.NUMERO_TAYNARA,
+                wellington: process.env.NUMERO_PAULO
+        }[String(nome || '').toLowerCase()] || null;
+}
+
+function numerosQueNuncaSaoLead() {
+        return new Set(
+                [...NUMEROS_INTERNOS_GESTAO, process.env.NUMERO_REBECCA, process.env.NUMERO_TAYNARA, process.env.NUMERO_PAULO, NUMERO_COORDENACAO, 'simulador_crm']
+                        .filter(Boolean)
+                        .map(n => String(n).replace(/\D/g, '') || String(n))
+        );
+}
+
+// Vendedor que recebeu este lead no encaminhamento por inatividade (se houve).
+// Usado pra que, se o lead voltar e terminar o cadastro com o bot, a confirmação
+// vá pro MESMO vendedor em vez de sortear outro da fila.
+async function vendedorDoEncaminhamento(telefone) {
+        if (dadosLead[telefone]?.vendedorEncaminhado) return dadosLead[telefone].vendedorEncaminhado;
         try {
-                const limite23h  = new Date(agora - 23 * 60 * 60 * 1000).toISOString();
-                const limite24h  = new Date(agora - 24 * 60 * 60 * 1000).toISOString();
-                const limite7d   = new Date(agora -  7 * 24 * 60 * 60 * 1000).toISOString();
-
-                const { data: jaEnviados } = await supabase
+                const { data } = await supabase
                         .from('conversas')
-                        .select('telefone')
-                        .eq('tipo', 'reengajamento')
-                        .gte('created_at', limite7d);
-                const jaEnviadosSet = new Set((jaEnviados || []).map(r => r.telefone));
-
-                const { data: conversasAntigas } = await supabase
-                        .from('conversas')
-                        .select('telefone, created_at')
-                        .eq('de', 'cliente')
-                        .lte('created_at', limite23h)
-                        .gte('created_at', limite7d)
-                        .order('created_at', { ascending: false });
-
-                const ultimaPorTel = {};
-                for (const r of (conversasAntigas || [])) {
-                        if (!ultimaPorTel[r.telefone]) ultimaPorTel[r.telefone] = r.created_at;
-                }
-
-                const candidatos = Object.keys(ultimaPorTel).filter(tel =>
-                        !ultimaAtividade[tel] &&
-                        !reengajamentoEnviado[tel] &&
-                        !jaEnviadosSet.has(tel) &&
-                        !NUMEROS_INTERNOS_GESTAO.has(tel)
-                );
-
-                for (const tel of candidatos) {
-                        try {
-                                // Checa se conversa já foi encerrada
-                                const { data: historico } = await supabase
-                                        .from('conversas')
-                                        .select('tipo')
-                                        .eq('telefone', tel)
-                                        .order('created_at', { ascending: false })
-                                        .limit(10);
-
-                                const tipos = (historico || []).map(r => r.tipo);
-                                const jaEncerrado = tipos.some(t =>
-                                        ['aluno','lead_confirmado','lead-vendedor','conversa_vendedor','outro_assunto'].includes(t)
-                                );
-                                if (jaEncerrado) {
-                                        reengajamentoEnviado[tel] = true;
-                                        salvarEstadoBot(tel);
-                                        continue;
-                                }
-
-                                // A query acima pega candidatos de até 7 dias atrás (pra não perder ninguém
-                                // que caiu fora da RAM num restart), mas texto livre só funciona dentro da
-                                // janela de 24h. Pra quem já passou disso, não tem como mandar texto livre
-                                // (só template — que não existe pra esse caso) — marca como "tratado" sem
-                                // enviar, senão fica tentando pra sempre e sempre falhando (erro 131047).
-                                if (ultimaPorTel[tel] < limite24h) {
-                                        reengajamentoEnviado[tel] = true;
-                                        salvarEstadoBot(tel);
-                                        console.log(`⏭️  Reengajamento pulado para ${tel} (janela de 24h já fechada, sem template pra esse caso)`);
-                                        continue;
-                                }
-
-                                // Dados do lead não estão na memória → mensagem de texto (janela 24h ainda aberta)
-                                const msgReengFb = 'Oi! 👋 Ainda posso te ajudar com informações sobre nossos cursos do CNA Recreio? 😊';
-                                console.log(`⏳ Reengajamento (fallback conversas) disparado para ${tel}`);
-                                await sendWhatsApp(tel, msgReengFb);
-                                salvarMensagem(tel, msgReengFb, 'bot', null, 'reengajamento');
-                                reengajamentoEnviado[tel] = true;
-                                ultimaAtividade[tel] = new Date(ultimaPorTel[tel]).getTime();
-                                salvarEstadoBot(tel);
-                        } catch (eCandidato) {
-                                // Isolado por candidato — uma falha (ex: 131047) não pode travar o resto
-                                // do lote. Sem marcar reengajamentoEnviado aqui: tenta de novo no próximo
-                                // ciclo, caso tenha sido um erro passageiro (rede, Meta fora do ar, etc.).
-                                console.error(`❌ Erro ao reengajar ${tel}:`, eCandidato.response?.data || eCandidato.message);
-                        }
-
-                        await new Promise(r => setTimeout(r, 2000)); // pausa entre envios
-                }
+                        .select('vendedor')
+                        .eq('telefone', telefone)
+                        .eq('tipo', TIPO_LEAD_ENCAMINHADO)
+                        .order('created_at', { ascending: false })
+                        .limit(1);
+                return data?.[0]?.vendedor || null;
         } catch (e) {
-                console.error('Erro no checkInatividade fallback DB:', e.message);
-        }
-
-        // ── Check principal: telefones em memória ────────────────────────────────
-        for (const telefone in ultimaAtividade) {
-                if (agora - ultimaAtividade[telefone] > 23 * 60 * 60 * 1000 && !reengajamentoEnviado[telefone]) {
-                        // Consulta o banco para ver se essa conversa já foi encerrada/encaminhada
-                        // Não reenvia reengajamento para: alunos, leads confirmados, ou quem já recebeu reengajamento recente
-                        try {
-                                const { data: historico } = await supabase
-                                        .from('conversas')
-                                        .select('tipo, created_at')
-                                        .eq('telefone', telefone)
-                                        .order('created_at', { ascending: false })
-                                        .limit(20);
-
-                                if (historico && historico.length > 0) {
-                                        const tipos = historico.map(r => r.tipo);
-                                        // Não envia reengajamento se a conversa já foi encerrada
-                                        const jaEncerrado = tipos.some(t =>
-                                                t === 'aluno' ||
-                                                t === 'lead_confirmado' ||
-                                                t === 'lead-vendedor' ||
-                                                t === 'conversa_vendedor' ||
-                                                t === 'outro_assunto'
-                                        );
-                                        if (jaEncerrado) {
-                                                reengajamentoEnviado[telefone] = true; // marca para não checar de novo
-                                                salvarEstadoBot(telefone);
-                                                console.log(`⏭️  Reengajamento pulado para ${telefone} (conversa já encerrada: ${tipos.find(t => ['aluno','lead_confirmado','lead-vendedor','conversa_vendedor','outro_assunto'].includes(t))})`);
-                                                continue;
-                                        }
-                                }
-                        } catch (e) {
-                                console.error('Erro ao checar histórico para reengajamento:', e.message);
-                        }
-
-                        const dados = dadosLead[telefone] || {};
-                        if (!dados.confirmado) {
-                                const nomeLead = dados.nome ? `, ${dados.nome}` : '';
-                                const msgReeng = `Oi${nomeLead}! 👋 Ainda posso te ajudar com informações sobre nossos cursos do CNA Recreio? 😊`;
-                                console.log(`⏳ Reengajamento disparado para ${telefone}`);
-                                await sendWhatsApp(telefone, msgReeng);
-                                salvarMensagem(telefone, msgReeng, 'bot', null, 'reengajamento');
-                                reengajamentoEnviado[telefone] = true;
-                                salvarEstadoBot(telefone);
-                        }
-                }
+                console.warn(`⚠️ Não deu pra checar encaminhamento anterior de ${telefone}:`, e.message);
+                return null;
         }
 }
 
-// Roda a cada 30 minutos
-setInterval(checkInatividade, 30 * 60 * 1000);
+// Decide quem deve ser encaminhado. Função pura (sem banco) pra dar pra testar.
+//  ultimaMsgCliente: { [telefone]: ISO da última mensagem do cliente pro bot }
+//  eventos: linhas de conversas { telefone, tipo, created_at } dos tipos que importam
+//  statusPorTel: { [telefone]: status em status_de_leads }
+function escolherLeadsParaEncaminhar({ ultimaMsgCliente, eventos, statusPorTel, agora, ignorar }) {
+        const limiteInatividade = agora - INATIVIDADE_ENCAMINHAR_MS;
+        const limitePesquisa = agora - JANELA_BUSCA_INATIVOS_MS;
+        const porTel = {};
+        for (const ev of eventos) (porTel[ev.telefone] = porTel[ev.telefone] || []).push(ev);
+
+        return Object.keys(ultimaMsgCliente).filter(tel => {
+                if (ignorar.has(tel)) return false;
+                const ultima = new Date(ultimaMsgCliente[tel]).getTime();
+                if (ultima > limiteInatividade) return false;                         // ainda dentro das 24h
+                if (STATUS_SEM_ENCAMINHAR.includes(statusPorTel[tel])) return false;
+                const evs = porTel[tel] || [];
+                if (evs.some(e => TIPOS_JA_RESOLVIDOS.includes(e.tipo))) return false;
+                if (evs.some(e => TIPOS_PESQUISA_PERDIDO.includes(e.tipo) && new Date(e.created_at).getTime() >= limitePesquisa)) return false;
+                // Já encaminhado e não falou mais nada depois → não encaminha de novo
+                if (evs.some(e => e.tipo === TIPO_LEAD_ENCAMINHADO && new Date(e.created_at).getTime() >= ultima)) return false;
+                return true;
+        });
+}
+
+async function encaminharLeadInativo(telefone, statusRow) {
+        const dados = dadosLead[telefone] || {};
+        if (dados.confirmado) return;
+
+        // Se já foi encaminhado antes (voltou a falar e parou de novo), mantém o mesmo
+        // vendedor. Senão, segue a escala/fila normal.
+        const vendedorAnterior = await vendedorDoEncaminhamento(telefone);
+        const vendedor = vendedorAnterior || await getVendedor();
+        const numeroVendedor = numeroDoVendedor(vendedor);
+        if (!vendedor || !numeroVendedor) {
+                console.warn(`⚠️ Encaminhamento de ${telefone} abortado: vendedor "${vendedor}" sem número configurado`);
+                return;
+        }
+
+        const telefoneLimpo = String(telefone).replace(/\D/g, '');
+        const nome = dados.nome || statusRow?.nome || '';
+        const turma = dados.turma || '';
+        const horario = dados.horario || '';
+
+        await sendTemplate(numeroVendedor, 'notificacao_novo_lead', [
+                { name: 'lead_nome',     value: nome    || '—' },
+                { name: 'lead_turma',    value: turma   || '—' },
+                { name: 'lead_horario',  value: horario || '—' },
+                { name: 'lead_telefone', value: `+${telefoneLimpo}` }
+        ]);
+
+        // O que o vendedor recebe no WhatsApp é o template aprovado na Meta, sem nenhuma
+        // mudança: mesmo nome (notificacao_novo_lead) e as mesmas 4 variáveis que
+        // notificarVendedor() e redistribuirLead() já usam. Não dá pra mandar texto
+        // diferente sem aprovar um template novo. Por isso o registro no CRM da conversa
+        // do vendedor é o MESMO texto que notificarVendedor() registra — o CRM mostra o
+        // que de fato chegou. A informação "parou de responder" fica só na conversa do lead.
+        const textoVendedor = `🎓 *Novo lead confirmado!*\n\n` +
+                `👤 Nome: ${nome || '—'}\n` +
+                `📚 Turma: ${turma || '—'}\n` +
+                `⏰ Horário: ${horario || '—'}\n` +
+                `📞 Telefone: +${telefoneLimpo}\n\n` +
+                `Entre em contato o quanto antes.`;
+        await salvarMensagem(numeroVendedor, textoVendedor, 'sistema', vendedor.toLowerCase(), 'notificacao_lead');
+
+        // Marca na conversa do lead (aparece no CRM como "Sistema" e é o que impede
+        // encaminhar de novo). A IA não vê essa linha (filtrada em carregarHistoricoParaIA).
+        await salvarMensagem(telefone, `🔔 Lead encaminhado para ${vendedor} (sem resposta ao bot há 24h)`, 'sistema', vendedor, TIPO_LEAD_ENCAMINHADO);
+
+        await supabase.from('status_de_leads')
+                .upsert({ telefone: telefoneLimpo, vendedor, updated_at: new Date().toISOString() }, { onConflict: 'telefone' });
+
+        vendedorPorTelefone[telefone] = vendedor;
+        if (!dadosLead[telefone]) {
+                dadosLead[telefone] = { nome: null, turma: null, horario: null, confirmado: false, notificado: false, consentimentoDado: true };
+        }
+        dadosLead[telefone].vendedorEncaminhado = vendedor;
+        reengajamentoEnviado[telefone] = true;
+        salvarEstadoBot(telefone);
+
+        console.log(`📋 Lead inativo ${telefone} encaminhado para ${vendedor}${vendedorAnterior ? ' (mesmo vendedor do encaminhamento anterior)' : ' (fila)'}`);
+}
+
+async function encaminharLeadsInativos() {
+        const agora = Date.now();
+        try {
+                const desde = new Date(agora - JANELA_BUSCA_INATIVOS_MS).toISOString();
+
+                // Mensagens de cliente pro BOT (conversa direta com vendedor fica de fora)
+                const { data: msgs, error } = await supabase
+                        .from('conversas')
+                        .select('telefone, created_at')
+                        .eq('de', 'cliente')
+                        .neq('tipo', 'conversa_vendedor')
+                        .gte('created_at', desde)
+                        .order('created_at', { ascending: false })
+                        .limit(5000);
+                if (error) throw new Error(error.message);
+
+                const ultimaMsgCliente = {};
+                for (const m of (msgs || [])) {
+                        if (!ultimaMsgCliente[m.telefone]) ultimaMsgCliente[m.telefone] = m.created_at;
+                }
+                const ignorar = numerosQueNuncaSaoLead();
+                Object.keys(aguardandoFeedbackPerdido).forEach(t => ignorar.add(t));
+                Object.keys(dadosLead).forEach(t => { if (dadosLead[t]?.confirmado) ignorar.add(t); });
+
+                const limite = agora - INATIVIDADE_ENCAMINHAR_MS;
+                const preCandidatos = Object.keys(ultimaMsgCliente)
+                        .filter(t => !ignorar.has(t) && new Date(ultimaMsgCliente[t]).getTime() <= limite);
+                if (preCandidatos.length === 0) return;
+
+                const eventos = await selectEmLotes('conversas', 'telefone, tipo, created_at', 'telefone', preCandidatos,
+                        q => q.in('tipo', [...TIPOS_JA_RESOLVIDOS, ...TIPOS_PESQUISA_PERDIDO, TIPO_LEAD_ENCAMINHADO]));
+                const statusRows = await selectEmLotes('status_de_leads', 'telefone, status, nome', 'telefone', preCandidatos);
+                const statusPorTel = {};
+                const statusRowPorTel = {};
+                statusRows.forEach(s => { statusPorTel[s.telefone] = s.status; statusRowPorTel[s.telefone] = s; });
+
+                const escolhidos = escolherLeadsParaEncaminhar({ ultimaMsgCliente, eventos, statusPorTel, agora, ignorar });
+                for (const tel of escolhidos) {
+                        try {
+                                await encaminharLeadInativo(tel, statusRowPorTel[tel]);
+                        } catch (e) {
+                                // Isolado por lead: uma falha não trava os outros. Sem marcador
+                                // salvo, tenta de novo no próximo ciclo (12h).
+                                console.error(`❌ Erro ao encaminhar lead inativo ${tel}:`, e.response?.data || e.message);
+                        }
+                        await new Promise(r => setTimeout(r, 1500));
+                }
+                if (escolhidos.length) console.log(`📋 ${escolhidos.length} lead(s) inativo(s) encaminhado(s) aos vendedores`);
+        } catch (e) {
+                console.error('❌ Erro em encaminharLeadsInativos:', e.message);
+        }
+}
+
+// Roda de 12 em 12h, em horário fixo dentro da escala dos vendedores: 8h e 20h BRT
+// (11h e 23h UTC). Horário fixo em vez de "12h depois de subir" pra um deploy de
+// madrugada não fazer o template chegar no celular do vendedor de madrugada.
+// Com a regra de 24h, o lead chega ao vendedor entre 24h e 36h depois da última mensagem.
+function agendarEncaminhamentoLeadsInativos() {
+        function msAteProximoDisparo() {
+                const agora = new Date();
+                const opcoes = [11, 23].map(h => {
+                        const d = new Date(agora);
+                        d.setUTCHours(h, 0, 0, 0);
+                        if (d <= agora) d.setUTCDate(d.getUTCDate() + 1);
+                        return d;
+                });
+                return Math.min(...opcoes.map(d => d - agora));
+        }
+        function agendar() {
+                const ms = msAteProximoDisparo();
+                console.log(`⏰ Encaminhamento de leads inativos agendado em ${Math.round(ms / 60000)} minutos`);
+                setTimeout(async () => {
+                        await encaminharLeadsInativos();
+                        agendar();
+                }, ms);
+        }
+        agendar();
+}
 
 // ── Resumo diário para a gerente ────────────────────────────────────────────
 async function enviarResumoDiario() {
@@ -4302,4 +4389,6 @@ app.listen(PORT, () => {
         agendarClassificacaoLeadsAntigos();
         // Pesquisa de feedback de leads perdidos, seg-sex às 13h BRT
         agendarPesquisasLeadsPerdidos();
+        // Lead que parou de responder o bot há 24h+ vai pro vendedor da fila, às 8h e 20h BRT
+        agendarEncaminhamentoLeadsInativos();
 });
